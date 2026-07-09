@@ -111,6 +111,7 @@ SERVE_SLURM_CPUS_PER_TASK ?= 12
 SERVE_SLURM_MEM ?= 96G
 SERVE_SLURM_TIME ?= 13:00:00
 SERVE_SLURM_OUTPUT ?= container/logs/serve-%j.out
+SERVE_SLURM_ERROR ?= container/logs/serve-%j.err
 SERVE_SLURM_EXTRA_FLAGS ?=
 
 SHARED_MODEL_NAME ?= $(shell $(CONFIG_VALUE) shared.model_name)
@@ -319,6 +320,7 @@ serve-submit:
 		exit 1; \
 	fi
 	@mkdir -p "$(dir $(SERVE_SLURM_OUTPUT))"
+	@mkdir -p "$(dir $(SERVE_SLURM_ERROR))"
 	sbatch \
 		--job-name="$(SERVE_SLURM_JOB_NAME)" \
 		--partition="$(SERVE_SLURM_PARTITION)" \
@@ -327,7 +329,7 @@ serve-submit:
 		--mem="$(SERVE_SLURM_MEM)" \
 		--time="$(SERVE_SLURM_TIME)" \
 		--output="$(SERVE_SLURM_OUTPUT)" \
-		--error="$(SERVE_SLURM_OUTPUT)" \
+		--error="$(SERVE_SLURM_ERROR)" \
 		$(SERVE_SLURM_EXTRA_FLAGS) \
 		--wrap='cd "$(SERVE_REMOTE_DIR)" && $(MAKE_BIN) serve-hold CONFIG_PATH="$(CONFIG_PATH)" SERVER_HOST="$(SERVE_SERVER_HOST)" SERVER_START_TIMEOUT="$(SERVE_SERVER_START_TIMEOUT)" SERVER_PORT="$(SERVER_PORT)" ARC3_SERVER_PORT_EXPLICIT="$(ARC3_SERVER_PORT_EXPLICIT)"'
 
