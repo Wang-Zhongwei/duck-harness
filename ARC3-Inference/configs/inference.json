@@ -15,24 +15,24 @@
     "exclude_tags": [],
     "games": [],
     "max_steps": null,
-    "max_runtime_minutes": 45,
+    "max_runtime_minutes": 60,
     "max_experiment_runtime_minutes": null,
     "max_experiment_runtime_hours": null,
-    "n_passes": 20,
-    "concurrent_jobs": 32
+    "n_passes": 10,
+    "concurrent_jobs": 16
   },
   "deployment": {
     "target": "inline",
     "wait": false,
     "source_repos": ["../tufa-arc-agi-framework"],
     "slurm": {
-      "gpu": "CPU",
-      "gpu_count": 0,
-      "time": "13:00:00",
+      "gpu": "H100",
+      "gpu_count": 2,
+      "time": "16:00:00",
       "image": "",
-      "partition": "cpuqs",
+      "partition": "gpuqs,condo",
       "nodelist": "",
-      "start_local_server": false,
+      "start_local_server": true,
       "extra_sbatch_flags": ["--account=default", "--qos=normal"]
     }
   },

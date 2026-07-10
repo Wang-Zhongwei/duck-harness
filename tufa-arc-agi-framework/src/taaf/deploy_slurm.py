@@ -32,7 +32,7 @@ import taaf.benchmark
 import taaf.deploy
 import taaf.support
 
-GPU = Literal["B200", "B300", "RTX", "CPU"]
+GPU = Literal["B200", "B300", "H100", "RTX", "CPU"]
 
 # Hardware tier → ``--gres=gpu:<name>:<count>`` (e.g. ``gpu:b200:8``).
 # ``B300``/``RTX`` follow the same naming convention forward-compat.
@@ -41,6 +41,7 @@ GPU = Literal["B200", "B300", "RTX", "CPU"]
 _GPU_GRES_NAMES: dict[str, str | None] = {
     "B200": "b200",
     "B300": "b300",
+    "H100": "h100",
     "RTX": "rtx",
     "CPU": None,
 }
@@ -135,7 +136,7 @@ class TufaSlurmTarget(taaf.deploy.DeploymentTarget):
 
     Fields:
 
-    - ``gpu``: hardware tier — ``B200`` / ``B300`` / ``RTX`` or ``CPU``
+    - ``gpu``: hardware tier — ``B200`` / ``B300`` / ``H100`` / ``RTX`` or ``CPU``
       (no GPU, useful for fast smoke tests). Mapped via the
       module-level ``_GPU_GRES_NAMES`` table.
     - ``time``: sbatch walltime, e.g. ``"04:00:00"``. Hard upper bound;
