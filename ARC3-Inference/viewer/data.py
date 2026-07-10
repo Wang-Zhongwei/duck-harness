@@ -511,6 +511,7 @@ def _load_game_summary(run_dir: Path, path: Path) -> dict[str, Any]:
     else:
         compact_payload = _summary_payload_from_raw_events(payload)
     compact_payload.update(metadata)
+    _normalize_artifact_static_urls(compact_payload)
     return _summary_from_compact_payload(compact_payload)
 
 
@@ -540,6 +541,7 @@ def _load_game_shell(run_dir: Path, path: Path) -> dict[str, Any]:
         ]
 
     compact_payload.update(metadata)
+    _normalize_artifact_static_urls(compact_payload)
     compact_payload["viewer_steps"] = step_summaries
     compact_payload["stepCount"] = len(step_summaries)
     compact_payload["stepsAreLazy"] = True
@@ -641,6 +643,7 @@ def _load_game_artifact(run_dir: Path, path: Path) -> _NormalizedGameArtifact:
     if _is_compact_saved_game_payload(payload):
         compact_payload = compact_saved_game_payload(payload, viewer_data_path=path, request_snapshots=request_snapshots)
         compact_payload.update(metadata)
+        _normalize_artifact_static_urls(compact_payload)
         return _NormalizedGameArtifact(
             summary=_summary_from_compact_payload(compact_payload),
             compact=compact_payload,
@@ -653,6 +656,7 @@ def _load_game_artifact(run_dir: Path, path: Path) -> _NormalizedGameArtifact:
     viewer_steps = _build_viewer_steps(normalized_events, request_snapshots=request_snapshots)
     compact_payload = _compact_game_payload(payload, normalized_events=normalized_events, viewer_steps=viewer_steps)
     compact_payload.update(metadata)
+    _normalize_artifact_static_urls(compact_payload)
     full_payload = {
         **payload,
         **metadata,
@@ -704,6 +708,22 @@ def _summary_from_compact_payload(compact_payload: dict[str, Any]) -> dict[str, 
     if isinstance(last_event, dict) and last_event:
         game["lastEvent"] = dict(last_event)
     return game
+
+
+def _normalize_artifact_static_urls(compact_payload: dict[str, Any]) -> None:
+    replay_url = str(compact_payload.get("replay_url") or "").strip()
+    if not replay_url:
+        return
+    split_dir_kind = str(compact_payload.get("split_dir_kind") or "").strip()
+    split_dir = str(compact_payload.get("split_dir") or "").strip()
+    if split_dir_kind not in {"passes", "seeds"} or not split_dir:
+        compact_payload["replay_url"] = replay_url
+        return
+    parts = Path(replay_url).parts
+    if parts[:2] == (split_dir_kind, split_dir):
+        compact_payload["replay_url"] = replay_url
+        return
+    compact_payload["replay_url"] = str(Path(split_dir_kind, split_dir, replay_url))
 
 
 def _compact_game_payload(

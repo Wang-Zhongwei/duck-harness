@@ -19,6 +19,7 @@ from viewer.data import load_game_payload, load_game_shell_payload, load_game_st
 log = logging.getLogger(__name__)
 _GZIP_MIN_BYTES = 1024
 _STATIC_SUBDIRS = {"solver_analysis", "movies"}
+_SPLIT_STATIC_SUBDIRS = {"passes", "seeds"}
 
 
 @dataclass(frozen=True)
@@ -107,10 +108,13 @@ class _ViewerHandler(BaseHTTPRequestHandler):
     def _try_serve_static(self, path: str, query: str) -> bool:
         rel = path.lstrip("/")
         parts = Path(rel).parts
-        if not parts or parts[0] not in _STATIC_SUBDIRS:
+        if not parts or ".." in parts:
             return False
-        safe_rel = Path(*parts)
-        if ".." in parts:
+        if parts[0] in _STATIC_SUBDIRS:
+            safe_rel = Path(*parts)
+        elif len(parts) >= 3 and parts[0] in _SPLIT_STATIC_SUBDIRS and parts[2] in _STATIC_SUBDIRS:
+            safe_rel = Path(*parts)
+        else:
             return False
         params = parse_qs(query)
         requested_run = params.get("run", [None])[0]
