@@ -1580,8 +1580,11 @@
 
     function renderBoardPanel(game, step) {
       const event = step.boardEvent || step.event;
-      const replay = game.replay_url
-        ? `<a class="summary-link" href="${escapeHtml(game.replay_url)}" target="_blank" rel="noreferrer">Replay</a>`
+      const replayHref = game.replay_url
+        ? (currentRunName ? `${game.replay_url}?run=${encodeURIComponent(currentRunName)}` : game.replay_url)
+        : "";
+      const replay = replayHref
+        ? `<a class="summary-link" href="${escapeHtml(replayHref)}" target="_blank" rel="noreferrer">Replay</a>`
         : "";
       const carriesPriorSequence = step.stepKind === "turn" || step.stepKind === "result";
       const rewardValue = step.reward != null
