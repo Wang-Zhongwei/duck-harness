@@ -142,6 +142,7 @@ SERVER_ENABLE_PREFIX_CACHING ?= $(shell $(CONFIG_VALUE) server.enable_prefix_cac
 SERVER_DEFAULT_CHAT_TEMPLATE_KWARGS ?= $(shell $(CONFIG_VALUE) server.default_chat_template_kwargs)
 SERVER_TOOL_CALL_PARSER ?= $(shell $(CONFIG_VALUE) server.tool_call_parser qwen3_coder)
 SERVER_REASONING_PARSER ?= $(shell $(CONFIG_VALUE) server.reasoning_parser)
+SERVER_ATTENTION_BACKEND ?= $(shell $(CONFIG_VALUE) server.attention_backend)
 SERVER_ENABLE_LORA ?= false
 SERVER_MAX_LORAS ?= 1
 SERVER_MAX_LORA_RANK ?= 16
@@ -457,6 +458,7 @@ server:
 				$(if $(SERVER_DTYPE),--dtype "$(SERVER_DTYPE)") \
 				$(if $(SERVER_QUANTIZATION),--quantization "$(SERVER_QUANTIZATION)") \
 				$(if $(SERVER_KV_CACHE_DTYPE),--kv-cache-dtype "$(SERVER_KV_CACHE_DTYPE)") \
+				$(if $(SERVER_ATTENTION_BACKEND),--attention-backend "$(SERVER_ATTENTION_BACKEND)") \
 				$(if $(SERVER_MAX_NUM_SEQS),--max-num-seqs "$(SERVER_MAX_NUM_SEQS)") \
 				$(if $(SERVER_GPU_MEMORY_UTILIZATION),--gpu-memory-utilization "$(SERVER_GPU_MEMORY_UTILIZATION)") \
 				$(if $(filter true TRUE 1 yes YES on ON,$(SERVER_TRUST_REMOTE_CODE)),--trust-remote-code) \
@@ -484,6 +486,7 @@ server:
 				$(if $(SERVER_DTYPE),--dtype "$(SERVER_DTYPE)") \
 				$(if $(SERVER_QUANTIZATION),--quantization "$(SERVER_QUANTIZATION)") \
 				$(if $(SERVER_KV_CACHE_DTYPE),--kv-cache-dtype "$(SERVER_KV_CACHE_DTYPE)") \
+				$(if $(SERVER_ATTENTION_BACKEND),--attention-backend "$(SERVER_ATTENTION_BACKEND)") \
 				$(if $(SERVER_MAX_NUM_SEQS),--max-num-seqs "$(SERVER_MAX_NUM_SEQS)") \
 				$(if $(SERVER_GPU_MEMORY_UTILIZATION),--gpu-memory-utilization "$(SERVER_GPU_MEMORY_UTILIZATION)") \
 				$(if $(filter true TRUE 1 yes YES on ON,$(SERVER_TRUST_REMOTE_CODE)),--trust-remote-code) \
