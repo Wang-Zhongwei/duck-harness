@@ -225,7 +225,13 @@ def _normalize_summary_text(value: Any, *, max_chars: int | None = 280) -> str:
 
 def _extract_labeled_blocks(content: str, labels: list[str]) -> dict[str, str]:
     normalized_labels = {label.lower(): label for label in labels}
-    targets = tuple(f"{label.lower()}:" for label in labels)
+    label_pattern = "|".join(
+        re.escape(label) for label in sorted(labels, key=len, reverse=True)
+    )
+    header_pattern = re.compile(
+        rf"^(?P<label>{label_pattern})(?:\*\*)?(?:\s+[^:\n]{{1,80}})?:",
+        flags=re.IGNORECASE,
+    )
     extracted: dict[str, list[str]] = {label: [] for label in labels}
     current_label: str | None = None
 
@@ -234,15 +240,13 @@ def _extract_labeled_blocks(content: str, labels: list[str]) -> dict[str, str]:
         candidate = stripped
         while candidate.startswith(("-", "*")):
             candidate = candidate[1:].lstrip()
-        lowered = candidate.lower()
 
         matched_label: str | None = None
         inline_value = ""
-        for target in targets:
-            if lowered.startswith(target):
-                matched_label = normalized_labels[target[:-1]]
-                inline_value = candidate[len(target):].strip()
-                break
+        header_match = header_pattern.match(candidate)
+        if header_match is not None:
+            matched_label = normalized_labels[header_match.group("label").lower()]
+            inline_value = candidate[header_match.end():].strip()
 
         if matched_label is not None:
             current_label = matched_label
