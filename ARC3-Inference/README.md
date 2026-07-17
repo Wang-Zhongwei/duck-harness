@@ -107,6 +107,8 @@ CONFIG_PATH=/path/to/config.json make sbatch
 
 Useful sections in `configs/inference.json`:
 
+- `analyzer.model_update_mode`: `tool` makes models such as Qwen save persistent world/goal/action models and notes with the native `update_memory` tool; `assistant` retains labeled assistant-text parsing for models that work better with the original prompt. The backward-compatible default is `assistant`.
+
 - `shared.*`: model name, base URL, provider, and context window.
 - `experiments.root_dir`: where timestamped run directories are written.
 - `environment.*`: games, tags, passes, concurrency, and runtime limits.

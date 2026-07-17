@@ -11,7 +11,7 @@ TOOL_CALL_FORMAT_GUIDANCE = (
 GAME_OVERVIEW_ADDENDUM = (
     "\n\nGame overview:\n"
     "- You are solving a multi-level grid puzzle game. \n"
-    "- You are called repeatedly over the course of a run. Treat each turn as one observe-plan-act cycle: re-understand the current state from the newest frame, update your working world model in Python, choose the next best action or short sequence against the goal as currently understood, execute it, and expect to re-evaluate on the next turn from the updated state.\n"
+    "- You are called repeatedly over the course of a run. Treat each turn as one observe-plan-act cycle: re-understand the current state from the newest frame, update your working world model, choose the next best action or short sequence against the goal as currently understood, execute it, and expect to re-evaluate on the next turn from the updated state.\n"
     "- Your job is to solve the entire game by clearing every level, not just the current screen.\n"
     "- Levels often build on earlier mechanics, but layouts and interactions can still change between levels.\n"
     "- Optimize for as few in-game actions as possible while still being reliable.\n"
@@ -79,7 +79,7 @@ PYTHON_ADDENDUM = (
     "- Use `current_frame.ascii` only to read a small, specific region of the board when `segmentation` is not enough; never use it to scan or summarize the whole board.\n"
     "- Every `python` tool call starts fresh. Re-import modules or re-define any custom utility logic you need.\n"
     "- The only importable standard-library modules are: bisect, collections, copy, fractions, functools, heapq, itertools, json, math, operator, random, re, statistics, string.\n"
-    "- The only tool is `python`; call it with one ephemeral `code` string.\n"
+    "- Call `python` with one ephemeral `code` string.\n"
     "- Always inspect `current_frame`, `history`, and `valid_actions` from Python instead of reasoning from the raw board by eye.\n"
     "- For the most recent change, compare `previous_frame` to `current_frame`, or `last_transition.before_frame` to `last_transition.after_frame`. `history[-1].frame` is the current frame, so comparing it to `current_frame` only compares the board to itself.\n"
     "- Maintain a compact working world model: what entities or regions exist, what actions seem to do, what the goal likely is, what remains uncertain, and what plan best fits the evidence so far.\n"
@@ -102,7 +102,7 @@ PYTHON_ADDENDUM = (
 
 COMPACT_TOOL_SESSION_ADDENDUM = (
     "\n\nTool session rules:\n"
-    "- You have exactly one tool: `python`.\n"
+    "- {tool_inventory}\n"
     f"- {TOOL_CALL_FORMAT_GUIDANCE}\n"
     "- The `python` tool code is not saved between calls, so rewrite any custom utility logic you still need.\n"
     "- You can call the `python` tool as many times as you want per step. Investigate until your code has a clear probe or plan.\n"
@@ -111,4 +111,11 @@ COMPACT_TOOL_SESSION_ADDENDUM = (
     "- Each `python` tool call has a hard time limit of 30 seconds.\n"
     "- Tool responses are capped to about {tool_output_tokens} tokens. If a response is cut off, the tool result will tell you that.\n"
     "- Keep code snippets short and purpose-built rather than dumping large frameworks into one call.\n"
+)
+
+
+MODEL_UPDATE_TOOL_ADDENDUM = (
+    "\n\nPersistent memory updates:\n"
+    "- `update_memory` saves your models and notes across turns: the world, goal, and action models plus cross-level notes, open questions, recent findings, and plan.\n"
+    "- Call it when the models you are carrying are no longer consistent with what you recently observed, or when your understanding of the game changes.\n"
 )

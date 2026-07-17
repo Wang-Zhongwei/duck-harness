@@ -20,6 +20,7 @@ from inference.agent.prompts import (
     PYTHON_ADDENDUM,
     STRUCTURED_RUNTIME_STATE_ADDENDUM,
     MULTIMODAL_CONTEXT_ADDENDUM,
+    MODEL_UPDATE_TOOL_ADDENDUM,
     TOOL_CALL_FORMAT_GUIDANCE,
     VISUAL_GAME_ADDENDUM,
 )
@@ -146,6 +147,9 @@ _LOCAL_ANALYZER_TEMPERATURE = _get_env_float("LOCAL_ANALYZER_TEMPERATURE", 0.6)
 _LOCAL_ANALYZER_TOP_P = _get_env_float("LOCAL_ANALYZER_TOP_P", 0.95)
 _LOCAL_ANALYZER_TOP_K = _get_env_int("LOCAL_ANALYZER_TOP_K", 20)
 _LOCAL_ANALYZER_SEED = _get_env_int("LOCAL_ANALYZER_SEED", -1)
+_LOCAL_ANALYZER_MODEL_UPDATE_MODE = os.environ.get(
+    "LOCAL_ANALYZER_MODEL_UPDATE_MODE", "assistant"
+).strip().lower()
 _REQUEST_SAFETY_MARGIN_TOKENS = 512
 _CONTEXT_OVERFLOW_RETRY_TRIM_TOKENS = 512
 _PERSISTENT_HISTORY_ASSISTANT_TURNS = 30
@@ -351,7 +355,22 @@ def _format_model_response_meta(
     return "\n".join(lines)
 
 
-def _build_system_prompt(*, tool_output_tokens: int) -> str:
+def _normalize_model_update_mode(value: str | None) -> str:
+    mode = str(value or "assistant").strip().lower()
+    if mode not in {"assistant", "tool"}:
+        raise ValueError(
+            "model_update_mode must be 'assistant' or 'tool', "
+            f"got {value!r}."
+        )
+    return mode
+
+
+def _build_system_prompt(
+    *,
+    tool_output_tokens: int,
+    model_update_mode: str = "assistant",
+) -> str:
+    model_update_mode = _normalize_model_update_mode(model_update_mode)
     prompt = "You are a coding agent solving a grid-based puzzle game."
     prompt += GAME_OVERVIEW_ADDENDUM
     prompt += STRUCTURED_RUNTIME_STATE_ADDENDUM
@@ -359,7 +378,15 @@ def _build_system_prompt(*, tool_output_tokens: int) -> str:
         prompt += MULTIMODAL_CONTEXT_ADDENDUM
     prompt += VISUAL_GAME_ADDENDUM
     prompt += PYTHON_ADDENDUM
-    prompt += COMPACT_TOOL_SESSION_ADDENDUM.format(tool_output_tokens=tool_output_tokens)
+    tool_inventory = "You have exactly one tool: `python`."
+    if model_update_mode == "tool":
+        tool_inventory = "You have two tools: `python` and `update_memory`."
+    prompt += COMPACT_TOOL_SESSION_ADDENDUM.format(
+        tool_output_tokens=tool_output_tokens,
+        tool_inventory=tool_inventory,
+    )
+    if model_update_mode == "tool":
+        prompt += MODEL_UPDATE_TOOL_ADDENDUM
     return prompt
 
 
@@ -917,6 +944,7 @@ class ToolAgent:
         api_key: str | None = None,
         base_url: str | None = None,
         provider: str | None = None,
+        model_update_mode: str | None = None,
     ) -> None:
         resolved_model = _resolve_analyzer_model(model)
         if base_url is not None or provider is not None:
@@ -942,8 +970,14 @@ class ToolAgent:
         self._tool_output_tokens = max(64, _LOCAL_ANALYZER_TOOL_OUTPUT_TOKENS)
         self._tool_output_chars = max(256, self._tool_output_tokens * 4)
         self._save_request_logs = bool(save_request_logs)
+        self._model_update_mode = _normalize_model_update_mode(
+            _LOCAL_ANALYZER_MODEL_UPDATE_MODE
+            if model_update_mode is None
+            else model_update_mode
+        )
         self._system_prompt = _build_system_prompt(
             tool_output_tokens=self._tool_output_tokens,
+            model_update_mode=self._model_update_mode,
         )
         self._request_safety_margin_tokens = _REQUEST_SAFETY_MARGIN_TOKENS
         self._context_budget_tokens = max(
@@ -958,6 +992,7 @@ class ToolAgent:
         self._current_valid_actions: list[str] = []
         self._last_step_summary: dict[str, Any] | None = None
         self._last_action_result: dict[str, Any] | None = None
+        self._completed_level_model_snapshot: dict[str, str] = {}
         self._summarized_knowledge = _empty_world_model()
 
     def _headers(self) -> dict[str, str]:
@@ -985,6 +1020,7 @@ class ToolAgent:
             self._session_generated_tokens = 0
             self._last_step_summary = None
             self._last_action_result = None
+            self._completed_level_model_snapshot = {}
             self._summarized_knowledge = _empty_world_model()
 
     @property
@@ -1107,6 +1143,8 @@ class ToolAgent:
         return " ".join(pieces)
 
     def _update_summarized_knowledge_from_assistant(self, content: str) -> None:
+        if self._model_update_mode != "assistant":
+            return
         note = _extract_scientist_note(content)
         if not note:
             return
@@ -1118,16 +1156,41 @@ class ToolAgent:
         summary = self._last_step_summary
         if not summary:
             return
+        level_fields = (
+            "world_model",
+            "goal_model",
+            "action_model",
+            "recent_findings",
+            "open_questions",
+            "current_plan",
+        )
+        if summary.get("level_transition"):
+            self._completed_level_model_snapshot = {
+                key: value
+                for key in level_fields
+                if (value := self._summarized_knowledge.get(key, ""))
+            }
+        elif summary.get("run_complete") or summary.get("game_over"):
+            self._completed_level_model_snapshot = {}
+
         if summary.get("level_transition") or summary.get("run_complete") or summary.get("game_over"):
-            for key in (
-                "world_model",
-                "goal_model",
-                "action_model",
-                "recent_findings",
-                "open_questions",
-                "current_plan",
-            ):
+            for key in level_fields:
                 self._summarized_knowledge[key] = ""
+
+    def _completed_level_model_lines(self) -> list[str]:
+        entries = (
+            ("World model", "world_model"),
+            ("Goal model", "goal_model"),
+            ("Action model", "action_model"),
+            ("Recent findings", "recent_findings"),
+            ("Open questions", "open_questions"),
+            ("Plan", "current_plan"),
+        )
+        return [
+            f"- {label}: {value}"
+            for label, key in entries
+            if (value := self._completed_level_model_snapshot.get(key, ""))
+        ]
 
     def _summarized_knowledge_lines(self) -> list[str]:
         entries = [
@@ -1143,7 +1206,7 @@ class ToolAgent:
         if not lines:
             return []
         return [
-            "Working world model carried from earlier turns:",
+            "Working models and notes carried from earlier turns:",
             *lines,
             "- Revise any item above immediately if `current_frame` or `history` contradicts it.",
         ]
@@ -1220,25 +1283,61 @@ class ToolAgent:
         if observed_max_level > current_level:
             state_line += f" out of observed max level {observed_max_level} so far"
         state_line += "."
+        lines.append(state_line)
+        is_level_transition = bool(
+            previous_step_summary and previous_step_summary.get("level_transition")
+        )
+        if is_level_transition:
+            completed_model_lines = self._completed_level_model_lines()
+            lines.append(
+                "Completed-level models are pasted below for one-time transfer into cross-level notes:"
+            )
+            if completed_model_lines:
+                lines.extend(completed_model_lines)
+            else:
+                lines.append("- No completed-level model fields were saved.")
+            lines.append(
+                "These level-specific fields have now been cleared and this temporary snapshot will not be shown after the next environment action."
+            )
+            if self._model_update_mode == "tool":
+                lines.append(
+                    "REQUIRED before executing any environment action: call `update_memory` with `cross_level_notes` summarizing the transferable entities, mechanics, action rules, goal structure, and useful uncertainties above. Preserve useful existing cross-level notes, but omit level-specific coordinates and layout details."
+                )
+            else:
+                lines.append(
+                    "REQUIRED before executing any new action: write a `Cross-level notes:` section summarizing the transferable entities, mechanics, action rules, goal structure, and useful uncertainties above. Preserve useful existing cross-level notes, but omit level-specific coordinates and layout details."
+                )
+        tool_line = (
+            "Only tool: `python`. It receives `current_frame`, `previous_frame`, `history`, "
+            "`transitions`, `last_transition`, `valid_actions`, `last_action_result`, and `action(actions)`."
+        )
+        if self._model_update_mode == "tool":
+            tool_line = (
+                "Tools: `python` inspects state and executes `action(actions)`; `update_memory` saves "
+                "revised persistent memory fields."
+            )
         lines.extend(
             [
-                state_line,
                 f"Valid actions right now: {_format_valid_action_line(valid_actions)}.",
-                "Only tool: `python`. It receives `current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, `valid_actions`, `last_action_result`, and `action(actions)`.",
+                tool_line,
                 "Only letter-coded board views and lightweight metadata are exposed; raw numeric color IDs are not available.",
                 "Keep tool output compact: use `current_frame.segmentation` as the primary view, and `current_frame.ascii` only for a small specific region; never print full boards.",
                 "For the most recent change, compare `previous_frame` to `current_frame`, or `last_transition.before_frame` to `last_transition.after_frame`; `history[-1].frame` is the current frame, not the previous one.",
-                "Use Python to inspect the evidence, refine that world model from the newest history, and search or score candidate actions or short sequences against the current goal as you currently understand it.",
-                "Maintain a compact working world model of what the current level seems to contain, what actions appear to do, what the goal seems to be, what is still uncertain, and what plan currently looks best.",
-                "Below you are provided with the current world model from the previous turn. The default behavior is to copy it and add or remove things based on the evidence that you gathered. BEFORE EXECUTING NEW ACTIONS YOU MUST ALWAYS GIVE THE REVISED VERSION OF THE WORLD MODEL.",
+                "Use Python to inspect the evidence, refine your models from the newest history, and search or score candidate actions or short sequences against the current goal as you currently understand it.",
+                "Maintain compact working models of what the current level seems to contain, what actions appear to do, what the goal seems to be, what is still uncertain, and what plan currently looks best.",
             ]
         )
+
+        if not is_level_transition:
+            lines.append(
+                "Below you are provided with the persistent memory from your previous turns. "
+            )
+            lines.extend(self._summarized_knowledge_lines())
+
         lines.append(
             "You may call `action(actions)` more than once in one Python snippet if your search or control loop needs it, "
             "but stop immediately if a result reports `game_over`, `run_complete`, `level_completed`, or `done`."
         )
-        lines.extend(self._summarized_knowledge_lines())
-        lines.append("end of world model. ")
         if action_num == 0:
             lines.append(
                 "Ground yourself in `current_frame` before acting, but start with a compact structural summary rather than restating the full frame."
@@ -1251,17 +1350,27 @@ class ToolAgent:
             [
                 "When ready, call `action(actions)` from inside the `python` tool with the best valid action or ordered batch selected by your code. If your code has found a reliable short sequence, prefer batching it in one call.",
                 "You may call `action(actions)` more than once in one Python snippet if your search or control loop needs it.",
-                "If you include assistant text before a tool call, keep it short and use it to update the world model. Helpful optional prefixes are `World model:`, `Goal model:`, `Action model:`, `Recent findings:`, `Open questions:`, `Plan:`, and `Cross-level notes:`.",
-                TOOL_CALL_FORMAT_GUIDANCE,
             ]
         )
+        if self._model_update_mode == "assistant":
+            lines.append(
+                "If you include assistant text before a tool call, keep it short and use it to update persistent memory. Helpful optional prefixes are `World model:`, `Goal model:`, `Action model:`, `Recent findings:`, `Open questions:`, `Plan:`, and `Cross-level notes:`."
+            )
+        else:
+            lines.append(
+                "Use `update_memory` to revise persistent memory fields when recent history "
+                "contradicts the current models, `last_action` reveals new evidence, or you "
+                "have a high-level insight, question, or plan worth preserving. Do not record "
+                "trivial details."
+            )
+        lines.append(TOOL_CALL_FORMAT_GUIDANCE)
         if "MOUSE" in _normalize_valid_actions(valid_actions):
             lines.append("If you use MOUSE, include integer row and col arguments.")
         return "\n".join(lines)
 
     def _tools(self, state_path: Path) -> list[dict[str, Any]]:
         self._ensure_session(state_path)
-        return [
+        tools = [
             {
                 "type": "function",
                 "function": {
@@ -1282,6 +1391,58 @@ class ToolAgent:
                 },
             }
         ]
+        if self._model_update_mode == "tool":
+            model_fields = {
+                "world_model": (
+                    "What the current level contains and how it behaves: the entities, objects, or "
+                    "regions present, their properties and relationships, and the mechanics governing them."
+                ),
+                "goal_model": (
+                    "Your current hypothesis for the win condition -- what completing the level or the "
+                    "whole game requires, plus any sub-goals along the way."
+                ),
+                "action_model": (
+                    "What each available action does: its observed effects, preconditions, and "
+                    "constraints, including actions that changed only HUD or timer state."
+                ),
+                "recent_findings": (
+                    "Compact new evidence from the most recent transition(s) -- what the last action(s) "
+                    "revealed that informed or corrected your models."
+                ),
+                "open_questions": (
+                    "Unresolved questions or competing hypotheses you still need to test to reduce "
+                    "uncertainty about the level."
+                ),
+                "plan": (
+                    "The high-level plan you intend to follow to test your hypotheses or finish "
+                    "the current level, given the current models and evidence."
+                ),
+                "cross_level_notes": (
+                    "Mechanics, rules, or lessons likely to transfer to future levels. Keep these "
+                    "general; avoid level-specific coordinates or layout details."
+                ),
+            }
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "update_memory",
+                        "description": (
+                            "Save revisions to persistent memory. Pass any subset of the fields; "
+                            "omitted or empty fields remain unchanged."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                name: {"type": "string", "description": description}
+                                for name, description in model_fields.items()
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                }
+            )
+        return tools
 
     def _chat_completion(
         self,
@@ -1591,10 +1752,49 @@ class ToolAgent:
             step_executed=step_executed,
         )
 
+    def _run_update_memory_tool(self, arguments: dict[str, Any]) -> _ToolDispatchResult:
+        field_map = {
+            "world_model": "world_model",
+            "goal_model": "goal_model",
+            "action_model": "action_model",
+            "recent_findings": "recent_findings",
+            "open_questions": "open_questions",
+            "plan": "current_plan",
+            "cross_level_notes": "cross_level_notes",
+        }
+        invalid_fields = [
+            name
+            for name in field_map
+            if name in arguments
+            and arguments[name] not in (None, "")
+            and not isinstance(arguments[name], str)
+        ]
+        if invalid_fields:
+            return _ToolDispatchResult(
+                json.dumps(
+                    {"error": f"Model fields must be strings: {', '.join(invalid_fields)}"},
+                    indent=2,
+                )
+            )
+
+        updated: list[str] = []
+        for argument_name, state_name in field_map.items():
+            value = arguments.get(argument_name)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            self._summarized_knowledge[state_name] = _normalize_summary_text(
+                value,
+                max_chars=None,
+            )
+            updated.append(argument_name)
+        return _ToolDispatchResult(json.dumps({"updated": updated}, indent=2))
+
     def _dispatch_tool(self, state_path: Path, name: str, arguments: dict[str, Any]) -> _ToolDispatchResult:
         self._ensure_session(state_path)
         if name == "python":
             return self._run_python_tool(state_path, arguments)
+        if name == "update_memory" and self._model_update_mode == "tool":
+            return self._run_update_memory_tool(arguments)
         return _ToolDispatchResult(json.dumps({"error": f"Unknown tool: {name}"}, indent=2))
 
     def _estimate_request_input_tokens(
@@ -1944,10 +2144,17 @@ class ToolAgent:
                             "Emit exactly one `python` tool call directly as your next response. "
                             "Do not place `<tool_call>` markup inside reasoning, explanation, or notes. "
                         )
+                    model_update_guidance = (
+                        "If helpful, include short world-model update lines such as `World model:`, `Goal model:`, `Action model:`, `Recent findings:`, `Open questions:`, `Plan:`, or `Cross-level notes:`. "
+                    )
+                    if self._model_update_mode == "tool":
+                        model_update_guidance = (
+                            "If the observed effect of `last_action` was not what your carried models predicted, save what you learned with `update_memory` (any subset of fields). "
+                        )
                     followup_prompt = (
                         f"{followup_prefix}"
                         "Then investigate and revise your working world model of what the level contains, what actions appear to do, what the current goal seems to be, and what plan looks best. "
-                        "If helpful, include short world-model update lines such as `World model:`, `Goal model:`, `Action model:`, `Recent findings:`, `Open questions:`, `Plan:`, or `Cross-level notes:`. "
+                        f"{model_update_guidance}"
                         "Call the `python` tool with code that inspects `current_frame`, `previous_frame`, `last_transition`, `history`, or `valid_actions` -- use `current_frame.segmentation` as the primary view, and `.ascii` only for a small specific region -- "
                         "compare `previous_frame` to `current_frame` for the most recent change, "
                         "derives a compact board summary, programs a small search or scorer over candidate actions or short sequences, "
@@ -2068,7 +2275,8 @@ class ToolAgent:
             f"request_safety_margin_tokens: {self._request_safety_margin_tokens}\n"
             f"tool_output_tokens: {self._tool_output_tokens}\n"
             f"yield_seconds: {self._yield_seconds if self._yield_seconds is not None else 'disabled'}\n"
-            f"available_tools: python\n"
+            f"available_tools: {'python, update_memory' if self._model_update_mode == 'tool' else 'python'}\n"
+            f"model_update_mode: {self._model_update_mode}\n"
             f"python_timeout_seconds: {self._python_timeout}\n"
             f"history_messages: {len(self._history_messages)}\n"
             f"step_executed: {step_executed}\n"
