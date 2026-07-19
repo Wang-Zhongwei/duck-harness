@@ -32,9 +32,14 @@ def to_engine_action(name: str | None) -> str | None:
 
 
 def to_model_actions(names: Iterable[str]) -> list[str]:
+    # Engine actions without a model-facing label (e.g. ACTION7/undo) are
+    # hidden from the agent entirely rather than leaked under their raw name.
     resolved: list[str] = []
     for name in names:
-        label = to_model_action(name)
-        if label and label not in resolved:
+        raw = str(name or "").strip().upper()
+        if raw not in ENGINE_TO_MODEL_ACTION:
+            continue
+        label = ENGINE_TO_MODEL_ACTION[raw]
+        if label not in resolved:
             resolved.append(label)
     return resolved

@@ -173,7 +173,11 @@ def _normalize_valid_actions(valid_actions: list[str] | None) -> list[str]:
     names: list[str] = []
     for value in valid_actions or []:
         engine_name = to_engine_action(value)
-        name = to_model_action(engine_name or value)
+        if engine_name is None:
+            # Engine actions without a model-facing label (e.g. ACTION7/undo)
+            # are hidden from the agent rather than leaked under a raw name.
+            continue
+        name = to_model_action(engine_name)
         if name and name not in names:
             names.append(name)
     return names
