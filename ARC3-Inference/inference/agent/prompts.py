@@ -40,8 +40,10 @@ STRUCTURED_RUNTIME_STATE_ADDENDUM = (
     "- `current_frame` exposes only `.ascii`, `.step`, `.level`, `.shape`, and `.segmentation`.\n"
     "- `current_frame.ascii` is a single newline-delimited string containing the latest board rendered with the letter-coded ARC color symbols.\n"
     "- `current_frame.segmentation` parses the board into objects. It returns `{'nodes': [...], 'adjacency_list': [...]}`.\n"
-    "- Each node in `segmentation['nodes']` is one 4-connected same-color object with: `id` (index, ordered top-most-left-most), `color` (ARC color character), `hash` (a signature of the object's color and shape that ignores its position -- equal hashes mean the same object regardless of where it is, so use it to track an object across frames or to spot multiple identical objects in one frame), `pixels` (cell count), `boundary` (clockwise outer-perimeter corner points as `[row, col]`), and `children` (ids of objects fully enclosed by this one).\n"
+    "- Each node is one 4-connected same-color object with fields: `id` (top-most-left-most order), `color` (ARC color char), `hash`, `pixels`, `bbox` (`[r0, c0, r1, c1]`, inclusive), `centroid` (`[r, c]`), `h`/`w`, `children` (ids of objects fully enclosed by this one). `boundary` (clockwise perimeter corners) also exists, but prefer `bbox`/`centroid`.\n"
     "- `segmentation['adjacency_list']` is a list of `[i, j]` node-id pairs whose objects share an edge.\n"
+    "- Find objects with e.g. `segmentation.find(color='B', px=24).one()` -- `.one()` errors unless exactly one match, so use it whenever you expect a unique object. `segmentation.find(color='R')` returns a plain list in id order (`.first()` for the top-left-most). Other keywords: `not_color=`, `min_px=`/`max_px=`, `in_bbox=(r0, c0, r1, c1)`, `hash=`; color keywords accept a char or a set.\n"
+    "- Nodes are per-frame snapshots; identity across frames is `hash` (position-invariant: same color+shape, anywhere). After `action(...)`, re-find in the fresh segmentation, e.g. `seg.find(hash=h).one()`.\n"
     
     "- `current_frame.step` is the current environment step count.\n"
     "- `current_frame.level` is the current level number.\n"

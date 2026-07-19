@@ -73,6 +73,64 @@ def _object_hash(cells, color):
     return hashlib.sha1(payload).hexdigest()[:16]
 
 
+class NodeList(list):
+    """List of segmentation nodes with accessors for the common match patterns."""
+
+    def one(self):
+        """Return the single matching node; raise if the match is not unique."""
+        if len(self) != 1:
+            raise ValueError(
+                f"expected exactly 1 matching node, found {len(self)}"
+            )
+        return self[0]
+
+    def first(self):
+        """Return the top-most-left-most matching node; raise if there are none."""
+        if not self:
+            raise ValueError("no matching nodes")
+        return self[0]
+
+
+class Segmentation(dict):
+    """Segmentation result dict (``nodes`` + ``adjacency_list``) with a query method."""
+
+    def find(self, color=None, not_color=None, px=None, min_px=None, max_px=None,
+             hash=None, in_bbox=None):
+        """Filter nodes by keyword; returns a :class:`NodeList` in id (top-left) order.
+
+        - ``color`` / ``not_color``: a color char or a set of them.
+        - ``px``: exact pixel count; ``min_px`` / ``max_px``: inclusive bounds.
+        - ``hash``: exact object hash (position-invariant; use to re-find an
+          object after an action instead of holding a stale node reference).
+        - ``in_bbox``: ``(r0, c0, r1, c1)`` -- keep nodes whose bbox lies fully inside.
+        """
+        if isinstance(color, str):
+            color = {color}
+        if isinstance(not_color, str):
+            not_color = {not_color}
+        out = NodeList()
+        for node in self["nodes"]:
+            if color is not None and node["color"] not in color:
+                continue
+            if not_color is not None and node["color"] in not_color:
+                continue
+            if px is not None and node["pixels"] != px:
+                continue
+            if min_px is not None and node["pixels"] < min_px:
+                continue
+            if max_px is not None and node["pixels"] > max_px:
+                continue
+            if hash is not None and node["hash"] != hash:
+                continue
+            if in_bbox is not None:
+                r0, c0, r1, c1 = in_bbox
+                nr0, nc0, nr1, nc1 = node["bbox"]
+                if not (r0 <= nr0 and c0 <= nc0 and nr1 <= r1 and nc1 <= c1):
+                    continue
+            out.append(node)
+        return out
+
+
 def segment_layer(layer, color_chars):
     """Segment one frame layer into connected-component nodes.
 
@@ -91,6 +149,9 @@ def segment_layer(layer, color_chars):
         hash regardless of position (lets objects be matched across frames, or when
         several similar objects appear in one frame).
       - ``pixels``: number of cells in the component.
+      - ``bbox``: ``[r0, c0, r1, c1]`` -- the component's inclusive bounding box.
+      - ``centroid``: ``[r, c]`` -- the component's center of mass, rounded to ints.
+      - ``h`` / ``w``: bounding-box height and width.
       - ``boundary``: the component's outer perimeter as an ordered, clockwise list of
         ``[row, col]`` corner points -- a Moore-neighbour trace reduced to only the
         vertices where the contour changes direction (enclosed holes are not traced).
@@ -98,10 +159,11 @@ def segment_layer(layer, color_chars):
         B only if B is the innermost component that fully surrounds A (every path from A
         to the grid edge crosses B), which yields a clean nesting tree.
 
-    Returns a dict with:
+    Returns a :class:`Segmentation` dict with:
       - ``nodes``: list of the node dicts above, in id order.
       - ``adjacency_list``: sorted list of ``[i, j]`` id pairs for components that share
         a 4-connected edge (includes parent/child pairs, since they physically touch).
+    Query it with ``.find(color=..., px=..., ...)``.
     """
     height = len(layer)
     width = len(layer[0]) if height else 0
@@ -189,15 +251,23 @@ def segment_layer(layer, color_chars):
         comp = components[cid]
         color = color_chars[max(0, min(15, comp["value"]))]
         boundary = _corner_points(_trace_outer_contour(comp["cells"], comp["start"]))
+        cells = comp["cells"]
+        rows_ = [r for r, _ in cells]
+        cols_ = [c for _, c in cells]
+        r0, c0, r1, c1 = min(rows_), min(cols_), max(rows_), max(cols_)
         nodes.append(
             {
                 "id": cid,
                 "color": color,
-                "hash": _object_hash(comp["cells"], color),
-                "pixels": len(comp["cells"]),
+                "hash": _object_hash(cells, color),
+                "pixels": len(cells),
+                "bbox": [r0, c0, r1, c1],
+                "centroid": [round(sum(rows_) / len(cells)), round(sum(cols_) / len(cells))],
+                "h": r1 - r0 + 1,
+                "w": c1 - c0 + 1,
                 "boundary": [[r, c] for r, c in boundary],
                 "children": children[cid],
             }
         )
 
-    return {"nodes": nodes, "adjacency_list": adjacency_list}
+    return Segmentation({"nodes": nodes, "adjacency_list": adjacency_list})
