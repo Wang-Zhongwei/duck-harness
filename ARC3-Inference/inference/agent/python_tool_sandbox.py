@@ -146,6 +146,69 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
         __repr__ = __str__
 
 
+    DIFF_CELL_DETAIL_LIMIT = 12
+
+
+    class DiffGroup(dict):
+        def __repr__(self):
+            if self["count"] <= DIFF_CELL_DETAIL_LIMIT:
+                return dict.__repr__(self)
+            folded = dict(self)
+            folded["cells"] = (
+                f"<{self['count']} cells; inspect group['cells'] for coordinates>"
+            )
+            return repr(folded)
+
+        __str__ = __repr__
+
+
+    def frame_diff(before_frame, after_frame):
+        # Group every cell change by color transition. Large coordinate lists are
+        # folded only in the representation; the object retains every cell.
+        if not isinstance(before_frame, FrameView) or not isinstance(after_frame, FrameView):
+            raise TypeError("frame_diff(before, after) expects two frame views.")
+        if before_frame.shape != after_frame.shape:
+            raise ValueError(
+                "frame_diff requires equal frame shapes; "
+                f"got {before_frame.shape} and {after_frame.shape}."
+            )
+
+        grouped = {}
+        cells_changed = 0
+        rows, cols = before_frame.shape
+        for r in range(rows):
+            for c in range(cols):
+                before_value = before_frame._grid[r][c]
+                after_value = after_frame._grid[r][c]
+                if before_value == after_value:
+                    continue
+                before_color = COLOR_CHARS[max(0, min(15, int(before_value)))]
+                after_color = COLOR_CHARS[max(0, min(15, int(after_value)))]
+                grouped.setdefault((before_color, after_color), []).append([r, c])
+                cells_changed += 1
+
+        groups = []
+        for (before_color, after_color), cells in grouped.items():
+            rs = [cell[0] for cell in cells]
+            cs = [cell[1] for cell in cells]
+            groups.append(
+                DiffGroup(
+                    {
+                        "from": before_color,
+                        "to": after_color,
+                        "count": len(cells),
+                        "bbox": [[min(rs), min(cs)], [max(rs), max(cs)]],
+                        "cells": cells,
+                    }
+                )
+            )
+        groups.sort(key=lambda group: (-group["count"], group["from"], group["to"]))
+        return {"cells_changed": cells_changed, "groups": groups}
+
+
+    diff = frame_diff
+
+
     class HistoryEntryView:
         def __init__(self, *, action, frame):
             self.action = action
@@ -164,6 +227,13 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
             self.after_frame = after_frame
             self.frame = after_frame
             self.result = dict(result) if isinstance(result, dict) else {}
+            self._diff = None
+
+        @property
+        def diff(self):
+            if self._diff is None and self.before_frame is not None and self.after_frame is not None:
+                self._diff = frame_diff(self.before_frame, self.after_frame)
+            return self._diff
 
         def __str__(self):
             return (
@@ -325,6 +395,8 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
                 for name in SAFE_BUILTINS
             },
             "result": None,
+            "frame_diff": frame_diff,
+            "diff": diff,
         }
         runtime_globals["__builtins__"]["__import__"] = _safe_import
 

@@ -158,11 +158,11 @@ _RESPONSE_META_MAX_CHARS = 4000
 _PYTHON_TOOL_DESCRIPTION = (
     "Run one ephemeral Python snippet against preloaded ASCII game state. Available globals: "
     "`current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, "
-    "`valid_actions`, `last_action_result`, "
+    "`valid_actions`, `last_action_result`, `frame_diff(before, after)` (alias `diff`), "
     "and `action(actions)` for executing one or more real environment actions. "
     "`current_frame` and each `history[*].frame` expose only `.ascii`, `.segmentation`, `.step`, and `.level`; "
     "`history[-1].frame` is the current post-action frame, not the previous frame. "
-    "For before/after diffs, compare `previous_frame` to `current_frame` or use `last_transition.before_frame` and `.after_frame`. "
+    "For before/after diffs, use `last_transition.diff` or `frame_diff(previous_frame, current_frame)`; it preserves every changed cell. "
     "For MOUSE, pass `row` and `col` integer fields; legacy x/y fields are rejected. "
     "The raw numeric grid is not available. Use `.segmentation` as the primary view; use `.ascii` only to read a small, specific region. "
     "Use `print(...)` for compact output or assign final data to `result`."
@@ -1346,11 +1346,8 @@ class ToolAgent:
             lines.append(
                 "Focus on what changed most recently in `history`, update the target environment change if needed, and separate gameplay-object changes from HUD-only changes."
             )
-        lines.extend(
-            [
-                "When ready, call `action(actions)` from inside the `python` tool with the best valid action or ordered batch selected by your code. If your code has found a reliable short sequence, prefer batching it in one call.",
-                "You may call `action(actions)` more than once in one Python snippet if your search or control loop needs it.",
-            ]
+        lines.append(
+            "When ready, call `action(actions)` from inside the `python` tool with the best valid action or ordered batch selected by your code. If your code has found a reliable short sequence, prefer batching it in one call."
         )
         if self._model_update_mode == "assistant":
             lines.append(
