@@ -160,11 +160,12 @@ _PYTHON_TOOL_DESCRIPTION = (
     "`current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, "
     "`valid_actions`, `last_action_result`, `frame_diff(before, after)` (alias `diff`), "
     "and `action(actions)` for executing one or more real environment actions. "
-    "`current_frame` and each `history[*].frame` expose only `.ascii`, `.segmentation`, `.step`, and `.level`; "
+    "`current_frame` and each `history[*].frame` expose only `.ascii`, `.segmentation`, `.step`, `.level`, and `.shape`; "
     "`history[-1].frame` is the current post-action frame, not the previous frame. "
     "For before/after diffs, use `last_transition.diff` or `frame_diff(previous_frame, current_frame)`; it preserves every changed cell. "
     "For MOUSE, pass `row` and `col` integer fields; legacy x/y fields are rejected. "
     "The raw numeric grid is not available. Use `.segmentation` as the primary view; use `.ascii` only to read a small, specific region. "
+    "Query objects with e.g. `segmentation.find(color='B', px=24).one()`; nodes carry `bbox`, `centroid`, `h`/`w`, and a position-invariant `hash` for cross-frame tracking. "
     "Use `print(...)` for compact output or assign final data to `result`."
 )
 
