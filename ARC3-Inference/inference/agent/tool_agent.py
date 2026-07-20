@@ -163,6 +163,7 @@ _PYTHON_TOOL_DESCRIPTION = (
     "`current_frame` and each `history[*].frame` expose only `.ascii`, `.segmentation`, `.step`, `.level`, and `.shape`; "
     "`history[-1].frame` is the current post-action frame, not the previous frame. "
     "For before/after diffs, use `last_transition.diff` (or `.diff` on any transition); it preserves every changed cell. "
+    "`transitions.steps_by_action()`, `transitions.for_action(name)`, and `transitions.at_step(step)` index past transitions by action or step for cross-use comparison. "
     "For MOUSE, pass `row` and `col` integer fields; legacy x/y fields are rejected. "
     "The raw numeric grid is not available. Use `.segmentation` as the primary view; use `.ascii` only to read a small, specific region. "
     "Query objects with e.g. `segmentation.find(color='B', px=24).one()`; nodes carry `bbox`, `centroid`, `h`/`w`, and a position-invariant `hash` for cross-frame tracking. "
@@ -483,6 +484,35 @@ def _ascii_history_view_payload(history_entries: list[HistoryEntry]) -> list[dic
             continue
         payload.append({"action": entry.action, "frame": frame_payload})
     return payload
+
+
+def _level_up_events(
+    history_entries: list[HistoryEntry],
+) -> list[tuple[int, int, int, str]]:
+    """Chronological (from_level, to_level, step, action) for each observed level increase."""
+    events: list[tuple[int, int, int, str]] = []
+    previous_level: int | None = None
+    for entry in history_entries:
+        frame = entry.frame
+        if frame is None:
+            continue
+        if previous_level is not None and frame.level > previous_level:
+            events.append((previous_level, frame.level, frame.step, entry.action))
+        previous_level = frame.level
+    return events
+
+
+def _format_level_up_line(events: list[tuple[int, int, int, str]]) -> str:
+    rendered = "; ".join(
+        f"level {before} -> {after} at step {step}"
+        + (f" (action: {action})" if action else "")
+        for before, after, step, action in events
+    )
+    return (
+        f"Level-up key steps so far: {rendered}. "
+        "Revisit them with `transitions.at_step(step)` (its `.diff`, `.before_frame`, `.after_frame`) "
+        "to recall what completed each level and refine the goal model."
+    )
 
 
 def _format_action_span(start_action_num: int | None, end_action_num: int | None) -> str | None:
@@ -1290,6 +1320,9 @@ class ToolAgent:
             state_line += f" out of observed max level {observed_max_level} so far"
         state_line += "."
         lines.append(state_line)
+        level_up_events = _level_up_events(history_entries)
+        if level_up_events:
+            lines.append(_format_level_up_line(level_up_events))
         is_level_transition = bool(
             previous_step_summary and previous_step_summary.get("level_transition")
         )

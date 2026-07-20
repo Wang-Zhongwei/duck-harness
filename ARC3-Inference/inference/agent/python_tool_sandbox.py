@@ -217,6 +217,11 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
         __repr__ = __str__
 
 
+    def _action_base_name(action):
+        # "MOUSE(row=4, col=7)" -> "MOUSE"; "space" -> "SPACE".
+        return str(action or "").split("(", 1)[0].strip().upper()
+
+
     class TransitionView:
         def __init__(self, *, action, before_frame, after_frame, result):
             self.action = action
@@ -225,6 +230,10 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
             self.frame = after_frame
             self.result = dict(result) if isinstance(result, dict) else {}
             self._diff = None
+
+        @property
+        def step(self):
+            return self.after_frame.step if self.after_frame is not None else None
 
         @property
         def diff(self):
@@ -241,6 +250,36 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
             )
 
         __repr__ = __str__
+
+
+    class TransitionList(list):
+        def steps_by_action(self):
+            # Map base action name -> chronological list of post-action steps,
+            # e.g. {'SPACE': [5, 10, 37], 'LEFT': [1, 5, 7], 'MOUSE': [12, 19]}.
+            grouped = {}
+            for transition in self:
+                grouped.setdefault(_action_base_name(transition.action), []).append(
+                    transition.step
+                )
+            return grouped
+
+        def for_action(self, action):
+            # Base names ('SPACE', case-insensitive) match every use of that
+            # action; a full display like 'MOUSE(row=4, col=7)' matches exactly.
+            query = str(action or "").strip()
+            if "(" in query:
+                matches = [t for t in self if str(t.action).strip() == query]
+            else:
+                wanted = query.upper()
+                matches = [t for t in self if _action_base_name(t.action) == wanted]
+            return TransitionList(matches)
+
+        def at_step(self, step):
+            # The transition whose post-action frame is `step`, or None.
+            for transition in self:
+                if transition.step == step:
+                    return transition
+            return None
 
 
     def _frame_from_payload(payload):
@@ -270,7 +309,7 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
 
 
     def _transitions_from_history(history, last_action_result):
-        transitions = []
+        transitions = TransitionList()
         for index, entry in enumerate(history):
             action = str(getattr(entry, "action", "") or "").strip()
             if not action:
