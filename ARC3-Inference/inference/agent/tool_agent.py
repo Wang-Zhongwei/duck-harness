@@ -158,11 +158,11 @@ _RESPONSE_META_MAX_CHARS = 4000
 _PYTHON_TOOL_DESCRIPTION = (
     "Run one ephemeral Python snippet against preloaded ASCII game state. Available globals: "
     "`current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, "
-    "`valid_actions`, `last_action_result`, `frame_diff(before, after)` (alias `diff`), "
+    "`valid_actions`, `last_action_result`, "
     "and `action(actions)` for executing one or more real environment actions. "
     "`current_frame` and each `history[*].frame` expose only `.ascii`, `.segmentation`, `.step`, `.level`, and `.shape`; "
     "`history[-1].frame` is the current post-action frame, not the previous frame. "
-    "For before/after diffs, use `last_transition.diff` or `frame_diff(previous_frame, current_frame)`; it preserves every changed cell. "
+    "For before/after diffs, use `last_transition.diff` (or `.diff` on any transition); it preserves every changed cell. "
     "For MOUSE, pass `row` and `col` integer fields; legacy x/y fields are rejected. "
     "The raw numeric grid is not available. Use `.segmentation` as the primary view; use `.ascii` only to read a small, specific region. "
     "Query objects with e.g. `segmentation.find(color='B', px=24).one()`; nodes carry `bbox`, `centroid`, `h`/`w`, and a position-invariant `hash` for cross-frame tracking. "
@@ -1207,13 +1207,14 @@ class ToolAgent:
             ("Plan", self._summarized_knowledge.get("current_plan", "")),
             ("Cross-level notes", self._summarized_knowledge.get("cross_level_notes", "")),
         ]
-        lines = [f"- {label}: {value}" for label, value in entries if value]
-        if not lines:
-            return []
+        lines = [
+            f"- {label}: {value if value else '(empty)'}"
+            for label, value in entries
+        ]
         return [
-            "Working models and notes carried from earlier turns:",
+            "Persistent memory carried from your previous turns (working models and notes):",
             *lines,
-            "- Revise any item above immediately if `current_frame` or `history` contradicts it.",
+            "- Fill in any `(empty)` item as soon as you have evidence for it, and revise any item above immediately if `current_frame`, `last_transition`, or `history` contradicts it.",
         ]
 
     def _build_user_message(self, user_prompt: str, current_frame: Frame | None) -> dict[str, Any]:
@@ -1306,12 +1307,14 @@ class ToolAgent:
             )
             if self._model_update_mode == "tool":
                 lines.append(
-                    "REQUIRED before executing any environment action: call `update_memory` with `cross_level_notes` summarizing the transferable entities, mechanics, action rules, goal structure, and useful uncertainties above. Preserve useful existing cross-level notes, but omit level-specific coordinates and layout details."
+                    "REQUIRED before executing any environment action: call `update_memory` with `cross_level_notes` that MERGE the transferable entities, mechanics, action rules, goal structure, and useful uncertainties above into the existing cross-level notes. Cross-level notes are cumulative across ALL levels of the run: keep earlier levels' still-useful insights and add the new ones; never overwrite or drop them. Omit level-specific coordinates and layout details."
                 )
             else:
                 lines.append(
-                    "REQUIRED before executing any new action: write a `Cross-level notes:` section summarizing the transferable entities, mechanics, action rules, goal structure, and useful uncertainties above. Preserve useful existing cross-level notes, but omit level-specific coordinates and layout details."
+                    "REQUIRED before executing any new action: write a `Cross-level notes:` section that MERGES the transferable entities, mechanics, action rules, goal structure, and useful uncertainties above into the existing cross-level notes. Cross-level notes are cumulative across ALL levels of the run: keep earlier levels' still-useful insights and add the new ones; never overwrite or drop them. Omit level-specific coordinates and layout details."
                 )
+        if not is_level_transition:
+            lines.extend(self._summarized_knowledge_lines())
         tool_line = (
             "Only tool: `python`. It receives `current_frame`, `previous_frame`, `history`, "
             "`transitions`, `last_transition`, `valid_actions`, `last_action_result`, and `action(actions)`."
@@ -1326,18 +1329,11 @@ class ToolAgent:
                 f"Valid actions right now: {_format_valid_action_line(valid_actions)}.",
                 tool_line,
                 "Only letter-coded board views and lightweight metadata are exposed; raw numeric color IDs are not available.",
-                "Keep tool output compact: use `current_frame.segmentation` as the primary view, and `current_frame.ascii` only for a small specific region; never print full boards.",
-                "For the most recent change, compare `previous_frame` to `current_frame`, or `last_transition.before_frame` to `last_transition.after_frame`; `history[-1].frame` is the current frame, not the previous one.",
+                "For the most recent change, inspect `last_transition.diff` first (any entry in `transitions` exposes the same `.diff`); `history[-1].frame` is the current frame, not the previous one.",
                 "Use Python to inspect the evidence, refine your models from the newest history, and search or score candidate actions or short sequences against the current goal as you currently understand it.",
                 "Maintain compact working models of what the current level seems to contain, what actions appear to do, what the goal seems to be, what is still uncertain, and what plan currently looks best.",
             ]
         )
-
-        if not is_level_transition:
-            lines.append(
-                "Below you are provided with the persistent memory from your previous turns. "
-            )
-            lines.extend(self._summarized_knowledge_lines())
 
         lines.append(
             "You may call `action(actions)` more than once in one Python snippet if your search or control loop needs it, "

@@ -28,7 +28,7 @@ def _run(code, before, after):
     )
 
 
-def test_frame_diff_preserves_isolated_cells_and_groups_color_transitions():
+def test_transition_diff_preserves_isolated_cells_and_groups_color_transitions():
     before = _frame([[0, 0, 0], [0, 5, 0], [0, 0, 0]], step=58)
     after = _frame([[1, 0, 0], [0, 0, 0], [0, 0, 5]], step=59)
 
@@ -63,7 +63,7 @@ def test_frame_diff_preserves_isolated_cells_and_groups_color_transitions():
     }
 
 
-def test_frame_diff_folds_only_the_printed_representation():
+def test_transition_diff_folds_only_the_printed_representation():
     before = _frame([[0] * 13], step=58)
     after = _frame([[5] * 13], step=59)
 
@@ -78,19 +78,27 @@ def test_frame_diff_folds_only_the_printed_representation():
     assert outcome["result"] == [[0, c] for c in range(13)]
 
 
-def test_frame_diff_alias_and_no_change_result():
+def test_transition_diff_reports_no_change():
     frame = _frame([[0, 5], [5, 0]], step=1)
 
-    outcome = _run("result = diff(previous_frame, current_frame)", frame, frame)
+    outcome = _run("result = last_transition.diff", frame, frame)
 
     assert not outcome["error"]
     assert outcome["result"] == {"cells_changed": 0, "groups": []}
 
 
-def test_frame_diff_rejects_different_shapes():
+def test_transition_diff_rejects_different_shapes():
     before = _frame([[0]], step=1)
     after = _frame([[0, 0]], step=2)
 
-    outcome = _run("result = frame_diff(previous_frame, current_frame)", before, after)
+    outcome = _run("result = last_transition.diff", before, after)
 
-    assert "ValueError: frame_diff requires equal frame shapes" in outcome["error"]
+    assert "ValueError: transition diffs require equal frame shapes" in outcome["error"]
+
+
+def test_frame_diff_builtin_is_not_exposed():
+    frame = _frame([[0, 5], [5, 0]], step=1)
+
+    for name in ("frame_diff", "diff"):
+        outcome = _run(f"result = {name}(previous_frame, current_frame)", frame, frame)
+        assert f"NameError: name '{name}' is not defined" in outcome["error"]

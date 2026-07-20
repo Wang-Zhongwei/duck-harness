@@ -47,6 +47,46 @@ def _trace_outer_contour(cells, start):
     return contour
 
 
+def _hole_regions(cells, bbox):
+    """4-connected components of the complement, inside ``bbox``, not reachable from
+    the bbox border -- i.e. the component's fully enclosed holes."""
+    r0, c0, r1, c1 = bbox
+    complement = {
+        (r, c)
+        for r in range(r0, r1 + 1)
+        for c in range(c0, c1 + 1)
+        if (r, c) not in cells
+    }
+    outside = {p for p in complement if p[0] in (r0, r1) or p[1] in (c0, c1)}
+    stack = list(outside)
+    while stack:
+        r, c = stack.pop()
+        for dr, dc in _ORTH:
+            nxt = (r + dr, c + dc)
+            if nxt in complement and nxt not in outside:
+                outside.add(nxt)
+                stack.append(nxt)
+    enclosed = complement - outside
+    holes = []
+    seen = set()
+    for p in sorted(enclosed):
+        if p in seen:
+            continue
+        region = set()
+        stack = [p]
+        seen.add(p)
+        while stack:
+            r, c = stack.pop()
+            region.add((r, c))
+            for dr, dc in _ORTH:
+                nxt = (r + dr, c + dc)
+                if nxt in enclosed and nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        holes.append(region)
+    return holes
+
+
 def _corner_points(contour):
     """Reduce a traced contour loop to only the points where its direction changes."""
     if len(contour) <= 2:
@@ -154,7 +194,11 @@ def segment_layer(layer, color_chars):
       - ``h`` / ``w``: bounding-box height and width.
       - ``boundary``: the component's outer perimeter as an ordered, clockwise list of
         ``[row, col]`` corner points -- a Moore-neighbour trace reduced to only the
-        vertices where the contour changes direction (enclosed holes are not traced).
+        vertices where the contour changes direction.
+      - ``holes``: internal boundaries -- one corner ring (same format as ``boundary``)
+        per fully enclosed hole, in top-left order; ``[]`` for solid components.
+        ``boundary`` + ``holes`` together describe the exact shape of the region, so
+        they can stand in for a full cell listing.
       - ``children``: ids of components directly enclosed by this node. A is a child of
         B only if B is the innermost component that fully surrounds A (every path from A
         to the grid edge crosses B), which yields a clean nesting tree.
@@ -255,6 +299,10 @@ def segment_layer(layer, color_chars):
         rows_ = [r for r, _ in cells]
         cols_ = [c for _, c in cells]
         r0, c0, r1, c1 = min(rows_), min(cols_), max(rows_), max(cols_)
+        holes = [
+            [[r, c] for r, c in _corner_points(_trace_outer_contour(region, min(sorted(region))))]
+            for region in _hole_regions(cells, (r0, c0, r1, c1))
+        ]
         nodes.append(
             {
                 "id": cid,
@@ -266,6 +314,7 @@ def segment_layer(layer, color_chars):
                 "h": r1 - r0 + 1,
                 "w": c1 - c0 + 1,
                 "boundary": [[r, c] for r, c in boundary],
+                "holes": holes,
                 "children": children[cid],
             }
         )

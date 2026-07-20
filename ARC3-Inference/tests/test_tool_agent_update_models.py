@@ -258,8 +258,7 @@ def test_tool_mode_prompts_use_prediction_check_not_parsing_history(tmp_path: Pa
         for tool in agent._tools(_state_path(tmp_path))
     }["update_memory"]
     assert "assistant-text parsing" not in description
-    assert "previous_frame" in description
-    assert "last_action" in description
+    assert "Save revisions to persistent memory" in description
 
     prompt = agent._build_user_prompt(
         3,
@@ -267,6 +266,5 @@ def test_tool_mode_prompts_use_prediction_check_not_parsing_history(tmp_path: Pa
         current_frame=Frame(grid=((0, 0), (0, 0)), step=3, level=1),
         previous_step_summary={"executed_count": 1, "level": 1},
     )
-    assert "A useful check: would these models have predicted" in prompt
     assert "put `update_memory` first" not in prompt
-    assert "Below are the persistent memory carried" in prompt
+    assert "Persistent memory carried from your previous turns" in prompt

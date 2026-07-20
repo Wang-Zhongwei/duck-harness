@@ -162,14 +162,14 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
         __str__ = __repr__
 
 
-    def frame_diff(before_frame, after_frame):
+    def _frame_diff(before_frame, after_frame):
         # Group every cell change by color transition. Large coordinate lists are
         # folded only in the representation; the object retains every cell.
         if not isinstance(before_frame, FrameView) or not isinstance(after_frame, FrameView):
-            raise TypeError("frame_diff(before, after) expects two frame views.")
+            raise TypeError("transition diffs expect two frame views.")
         if before_frame.shape != after_frame.shape:
             raise ValueError(
-                "frame_diff requires equal frame shapes; "
+                "transition diffs require equal frame shapes; "
                 f"got {before_frame.shape} and {after_frame.shape}."
             )
 
@@ -206,9 +206,6 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
         return {"cells_changed": cells_changed, "groups": groups}
 
 
-    diff = frame_diff
-
-
     class HistoryEntryView:
         def __init__(self, *, action, frame):
             self.action = action
@@ -232,7 +229,7 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
         @property
         def diff(self):
             if self._diff is None and self.before_frame is not None and self.after_frame is not None:
-                self._diff = frame_diff(self.before_frame, self.after_frame)
+                self._diff = _frame_diff(self.before_frame, self.after_frame)
             return self._diff
 
         def __str__(self):
@@ -395,8 +392,6 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
                 for name in SAFE_BUILTINS
             },
             "result": None,
-            "frame_diff": frame_diff,
-            "diff": diff,
         }
         runtime_globals["__builtins__"]["__import__"] = _safe_import
 

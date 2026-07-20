@@ -10,7 +10,7 @@ TOOL_CALL_FORMAT_GUIDANCE = (
 
 GAME_OVERVIEW_ADDENDUM = (
     "\n\nGame overview:\n"
-    "- You are solving a multi-level grid puzzle game. \n"
+    "- You are solving a multi-level grid puzzle game.\n"
     "- You are called repeatedly over the course of a run. Treat each turn as one observe-plan-act cycle: re-understand the current state from the newest frame, update your working world model, choose the next best action or short sequence against the goal as currently understood, execute it, and expect to re-evaluate on the next turn from the updated state.\n"
     "- Your job is to solve the entire game by clearing every level, not just the current screen.\n"
     "- Levels often build on earlier mechanics, but layouts and interactions can still change between levels.\n"
@@ -31,6 +31,7 @@ VISUAL_GAME_ADDENDUM = (
     "- Re-ground on the newest frame after any score increase or abrupt scene change; the returned board may already be the next level.\n"
     "- `WIN` means the whole game is solved. Mid-run level completion is more likely to appear as a score increase while play continues.\n"
     "- Strategies may transfer loosely across levels, but layouts and mechanics can change. Re-check the new board before repeating a plan.\n"
+    "- When one action changes several objects at once, or the same action seems to behave differently across levels, look for one deeper mechanic that explains all the changes together\n" # RL idea
     "- For `MOUSE`, pass `row` and `col` integer arguments. `row` is vertical position, `col` is horizontal position.\n"
 )
 
@@ -38,13 +39,11 @@ STRUCTURED_RUNTIME_STATE_ADDENDUM = (
     "\n\nRuntime variables inside every `python` tool call:\n"
     "- `current_frame` is a lightweight frame view for the latest environment state. It exposes only `.ascii` (the board as one newline-delimited string of ARC color chars), `.step`, `.level`, `.shape` (a `(rows, cols)` tuple), and `.segmentation`.\n"
     "- `current_frame.segmentation` parses the board into objects. It returns `{'nodes': [...], 'adjacency_list': [...]}`.\n"
-    "- Each node is one 4-connected same-color object with fields: `id` (top-most-left-most order), `color` (ARC color char), `hash`, `pixels`, `bbox` (`[r0, c0, r1, c1]`, inclusive), `centroid` (`[r, c]`), `h`/`w`, `children` (ids of objects fully enclosed by this one). `boundary` (clockwise perimeter corners) also exists, but prefer `bbox`/`centroid`.\n"
+    "- Each node is one 4-connected same-color object with fields: `id` (top-most-left-most order), `color` (ARC color char), `hash`, `pixels`, `bbox` (`[r0, c0, r1, c1]`, inclusive), `centroid` (`[r, c]`), `h`/`w`, `children` (ids of objects fully enclosed by this one). When the exact outline or shape matters, use `boundary` (outer perimeter as clockwise `[r, c]` corner points) plus `holes` (one corner ring per enclosed hole; `[]` if solid) -- together they describe the region exactly; use `bbox`/`centroid` when position is enough.\n"
     "- `segmentation['adjacency_list']` is a list of `[i, j]` node-id pairs whose objects share an edge.\n"
     "- Find objects with e.g. `segmentation.find(color='B', px=24).one()` -- `.one()` errors unless exactly one match, so use it whenever you expect a unique object. `segmentation.find(color='R')` returns a plain list in id order (`.first()` for the top-left-most). Other keywords: `not_color=`, `min_px=`/`max_px=`, `in_bbox=(r0, c0, r1, c1)`, `hash=`; color keywords accept a char or a set.\n"
     "- Nodes are per-frame snapshots; identity across frames is `hash` (position-invariant: same color+shape, anywhere). After `action(...)`, re-find in the fresh segmentation, e.g. `seg.find(hash=h).one()`.\n"
-    
     "- The raw numeric grid is intentionally not exposed. Use `current_frame.segmentation` as your primary view of the board -- objects, colors, shapes, containment, adjacency, and cross-frame object hashes. Use `current_frame.ascii` only to read a small, specific region; do not scan the whole board with it.\n"
-
     "- `history` is a chronological list of action/frame snapshots.\n"
     "- `history` is a Python list of objects, not a dict.\n"
     "- Each history entry exposes only `.action` and `.frame`; entries are not subscriptable like `entry['action']`.\n"
@@ -53,8 +52,8 @@ STRUCTURED_RUNTIME_STATE_ADDENDUM = (
     "- `previous_frame` is the frame before the most recent real environment action, or `None` if no previous frame is available.\n"
     "- `last_action` is the most recent real environment action name/display, or `None` before any real action.\n"
     "- `transitions` is a chronological list of actual action transitions, excluding the initial seeded frame. Each transition exposes `.action`, `.before_frame`, `.after_frame`, `.frame` (alias of `.after_frame`), and `.result`.\n"
-    "- `last_transition` is `transitions[-1]` or `None`. Its `.result` mirrors `last_action_result`; older transitions may have an empty `.result`. For before/after diffs, compare `last_transition.before_frame` to `last_transition.after_frame`; do not compare `current_frame` to `history[-1].frame`.\n"
-    "- Use `last_transition.diff` for the latest cell-level change, or `frame_diff(a, b)` (alias `diff`) for any two equal-sized frames. It returns `cells_changed` plus `groups` (largest first), each with `from`, `to`, `count`, inclusive `bbox` `[[r0, c0], [r1, c1]]`, and `cells`. Printing folds `cells` for groups larger than 12, but the full list stays accessible as `group['cells']`.\n"
+    "- `last_transition` is `transitions[-1]` or `None`. Its `.result` mirrors `last_action_result`; older transitions may have an empty `.result`.\n"
+    "- Use `last_transition.diff` for the latest cell-level change; any transition in `transitions` exposes the same `.diff`. It returns `cells_changed` plus `groups` (largest first), each with `from`, `to`, `count`, inclusive `bbox` `[[r0, c0], [r1, c1]]`, and `cells`. Printing folds `cells` for groups larger than 12, but the full list stays accessible as `group['cells']`.\n"
     "- `last_action_result` is the persisted result dict from the most recent `action(...)` call (`{}` before any action; it survives inspection-only calls). Keys include `board_changed`, `done`, `level_completed`, `game_over`, `run_complete`, `reward`, and `valid_actions`.\n"
     "- `valid_actions` is the current list of valid action names.\n"
     "- Call `action(actions)` to execute one or more real environment actions from Python.\n"
@@ -92,15 +91,13 @@ PYTHON_ADDENDUM = (
     "- Maintain a compact working world model: what entities or regions exist, what actions seem to do, what the goal likely is, what remains uncertain, and what plan best fits the evidence so far.\n"
     "- IMPORTANT: Especially when the game is about making an agent navigate to a target, it is usually safer to write an explicit search algorithm such as BFS. More generally, when the objective is understood but the best action order is unclear, pathfinding, flood fill, BFS, DFS, beam search, shortest-path search, limited action-sequence search, or custom heuristics are all valid.\n"
     "- Optimize for the shortest reliable sequence that advances the current goal as described by your world model. If confidence is low, program a discriminating probe and revise the world model from the result; once the important state variables and action effects are understood, stop probing and search in the inferred state space.\n"
-    "- Never print or echo full board frames. Return only compact derived summaries such as object lists, diffs, coordinates, counts, or tiny local crops.\n"
-    "- Keep tool-output context size minimal and decision-oriented so you can quickly compare before/after state. It's fine to write a lot of python code, just make the output short and interpretable\n"
+    "- Never print or echo full board frames. It is fine to write a lot of Python, but return only compact decision-oriented summaries -- object lists, diffs, coordinates, counts, or tiny local crops.\n"
     "- A strong default loop is: read `last_transition.diff`, summarize the relevant objects, infer the desired environment change, write a small scorer or search over candidate sequences, execute the best probe or plan with `action(...)`, then inspect again until you understand exactly what changed.\n"
     "- For object tracking across frames, match by `hash` first; when a shape morphs (its hash changes), fall back to color, overlap, bounding-box proximity, area change, and edge contact rather than exact coordinates alone.\n"
     "- After every action, verify whether gameplay objects changed or whether only a timer, progress bar, or remaining-step bar moved. Do not treat HUD-only changes as evidence that the move worked.\n"
     "- Use `print(...)` for compact summaries, or assign a final compact object to `result`.\n"
     "- Call `action(...)` inside Python rather than returning action text in the chat.\n"
-    "- `action(...)` accepts an ordered list of one or more actions. Once your code has selected a reliable sequence, it is often useful to batch it.\n"
-    "- You can also call `action(...)` multiple times in one Python snippet, including inside loops. Each call updates the preloaded variables before execution continues.\n"
+    "- `action(...)` accepts an ordered list of actions and may be called repeatedly in one snippet, including inside loops; each call refreshes the preloaded variables before execution continues. Once your code has found a reliable sequence, batch it.\n"
     "- If an action result reports `game_over`, `run_complete`, `level_completed`, or `done`, stop acting immediately and re-ground on the next turn.\n"
 )
 
@@ -109,7 +106,7 @@ COMPACT_TOOL_SESSION_ADDENDUM = (
     "- {tool_inventory}\n"
     f"- {TOOL_CALL_FORMAT_GUIDANCE}\n"
     "- You can call the `python` tool as many times as you want per step. Investigate until your code has a clear probe or plan.\n"
-    "- Do not ration tool calls when the state is unclear. Spend extra tool calls to confirm what changed between frames and whether the last action affected gameplay state or only HUD elements such as countdown bars.\n"
+    "- Do not ration tool calls when the state is unclear; spend extra calls to confirm what actually changed.\n"
     "- After `action(...)` returns, the structured runtime state is refreshed before the next Python statement and before the next tool call. Inspection-only Python calls do not clear `last_action_result`.\n"
     "- Each `python` tool call has a hard time limit of 30 seconds.\n"
     "- Tool responses are capped to about {tool_output_tokens} tokens. If a response is cut off, the tool result will tell you that.\n"
