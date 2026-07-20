@@ -71,8 +71,6 @@ MULTIMODAL_CONTEXT_ADDENDUM = (
 
 PYTHON_ADDENDUM = (
     "\n\nPython tool guidance:\n"
-    "- Use `current_frame.segmentation` as your primary view of the board -- objects, colors, containment, adjacency, and cross-frame object hashes.\n"
-    "- Use `current_frame.ascii` only to read a small, specific region of the board when `segmentation` is not enough; never use it to scan or summarize the whole board.\n"
     "- A typical inspect-act-verify call looks like:\n"
     "```python\n"
     "d = last_transition.diff\n"
@@ -87,9 +85,7 @@ PYTHON_ADDENDUM = (
     "- The only importable standard-library modules are: bisect, collections, copy, fractions, functools, heapq, itertools, json, math, operator, random, re, statistics, string.\n"
     "- Call `python` with one ephemeral `code` string.\n"
     "- Always inspect `current_frame`, `history`, and `valid_actions` from Python instead of reasoning from the raw board by eye.\n"
-    "- For the most recent change, inspect `last_transition.diff` before summarizing objects. Use `frame_diff(previous_frame, current_frame)` (or `diff(...)`) for an explicit comparison. `history[-1].frame` is the current frame, so comparing it to `current_frame` only compares the board to itself.\n"
-    "- Maintain a compact working world model: what entities or regions exist, what actions seem to do, what the goal likely is, what remains uncertain, and what plan best fits the evidence so far.\n"
-    "- IMPORTANT: Especially when the game is about making an agent navigate to a target, it is usually safer to write an explicit search algorithm such as BFS. More generally, when the objective is understood but the best action order is unclear, pathfinding, flood fill, BFS, DFS, beam search, shortest-path search, limited action-sequence search, or custom heuristics are all valid.\n"
+    "- IMPORTANT: when the objective is understood but the best action order is unclear, write an explicit search over the inferred state space instead of guessing moves -- BFS by default; fall back to a custom scorer or heuristic only when BFS does not fit the problem.\n"
     "- Optimize for the shortest reliable sequence that advances the current goal as described by your world model. If confidence is low, program a discriminating probe and revise the world model from the result; once the important state variables and action effects are understood, stop probing and search in the inferred state space.\n"
     "- Never print or echo full board frames. It is fine to write a lot of Python, but return only compact decision-oriented summaries -- object lists, diffs, coordinates, counts, or tiny local crops.\n"
     "- A strong default loop is: read `last_transition.diff`, summarize the relevant objects, infer the desired environment change, write a small scorer or search over candidate sequences, execute the best probe or plan with `action(...)`, then inspect again until you understand exactly what changed.\n"
