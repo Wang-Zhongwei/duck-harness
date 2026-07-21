@@ -174,7 +174,7 @@ _PYTHON_TOOL_DESCRIPTION = (
     "For before/after diffs, use `last_transition.diff` or `frame_diff(previous_frame, current_frame)`; it preserves every changed cell. "
     "For MOUSE, pass `row` and `col` integer fields; legacy x/y fields are rejected. "
     "The raw numeric grid is not available. Use `.segmentation` as the primary view; use `.ascii` only to read a small, specific region. "
-    "Query objects with e.g. `segmentation.find(color='B', area=24).one()`; nodes carry `area` (int, number of cells excluding children), `bbox`, `centroid`, `h`/`w`, and a position-invariant `hash` for cross-frame tracking. "
+    "Query objects with e.g. `segmentation.find(color='B', area=24).one()`; nodes carry `area` (int, number of cells excluding children), `bbox`, `centroid`, `h`/`w`, and a position-invariant `id` for cross-frame tracking (identical-looking objects share an id). "
     "Use `print(...)` for compact output or assign final data to `result`."
 )
 

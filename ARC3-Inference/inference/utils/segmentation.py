@@ -62,24 +62,26 @@ def _corner_points(contour):
     return corners
 
 
-def _object_hash(cells, color):
-    """Translation-invariant signature of an object: its color plus its cell shape,
+def _object_id(cells, color):
+    """Translation-invariant identity of an object: its color plus its cell shape,
     normalized so the top-left of its bounding box is the origin. Same shape + color
-    => same hash regardless of position, so objects can be matched across frames."""
+    => same id regardless of position, so objects can be matched across frames.
+    Identical-looking objects share an id."""
     min_r = min(r for r, _ in cells)
     min_c = min(c for _, c in cells)
     norm = sorted((r - min_r, c - min_c) for r, c in cells)
     payload = repr((color, norm)).encode()
-    return hashlib.sha1(payload).hexdigest()[:16]
+    return hashlib.sha1(payload).hexdigest()[:8]
 
 
 NODE_FIELDS = (
-    "id", "color", "hash", "area", "bbox", "centroid", "h", "w", "boundary", "children",
+    "id", "color", "area", "bbox", "centroid", "h", "w", "boundary", "children",
 )
 
 # Names that read like node fields but are not, mapped to what to use instead. Keeps a
 # wrong guess from failing as a confusing TypeError several lines later.
 _NODE_FIELD_HINTS = {
+    "hash": "id",
     "pixels": "area (an int cell count, not a list of coordinates)",
     "px": "area (an int cell count)",
     "n_pixels": "area",
@@ -146,11 +148,12 @@ class Segmentation(dict):
 
     FIND_KEYWORDS = (
         "color", "not_color", "area", "min_area", "max_area", "id", "h", "w",
-        "min_h", "max_h", "min_w", "max_w", "hash", "in_bbox",
+        "min_h", "max_h", "min_w", "max_w", "in_bbox",
     )
 
     # Rejected keywords that have an obvious intended target.
     _FIND_KEYWORD_HINTS = {
+        "hash": "id",
         "count": "area",
         "min_count": "min_area",
         "max_count": "max_area",
@@ -165,19 +168,21 @@ class Segmentation(dict):
 
     def find(self, color=None, not_color=None, area=None, min_area=None, max_area=None,
              id=None, h=None, w=None, min_h=None, max_h=None, min_w=None, max_w=None,
-             hash=None, in_bbox=None, **unknown):
-        """Filter nodes by keyword; returns a :class:`NodeList` in id (top-left) order.
+             in_bbox=None, **unknown):
+        """Filter nodes by keyword; returns a :class:`NodeList` in reading order
+        (top-most-left-most first).
 
         Every keyword matches the node field of the same name, so anything printed
         from a node can be filtered on.
 
         - ``color`` / ``not_color``: a color char or a set of them.
         - ``area``: exact cell count; ``min_area`` / ``max_area``: inclusive bounds.
-        - ``id``: exact node id (only stable within a single frame).
+        - ``id``: exact object id (position-invariant: same color + shape => same id,
+          in any frame; use to re-find an object after an action instead of holding a
+          stale node reference; identical-looking objects share an id, so this can
+          match several nodes).
         - ``h`` / ``w``: exact bbox height/width; ``min_h`` / ``max_h`` / ``min_w`` /
           ``max_w``: inclusive bounds.
-        - ``hash``: exact object hash (position-invariant; use to re-find an
-          object after an action instead of holding a stale node reference).
         - ``in_bbox``: ``(r0, c0, r1, c1)`` -- keep nodes whose bbox lies fully inside.
         """
         if unknown:
@@ -224,8 +229,6 @@ class Segmentation(dict):
                 continue
             if max_w is not None and node["w"] > max_w:
                 continue
-            if hash is not None and node["hash"] != hash:
-                continue
             if in_bbox is not None:
                 r0, c0, r1, c1 = in_bbox
                 nr0, nc0, nr1, nc1 = node["bbox"]
@@ -241,17 +244,15 @@ def segment_layer(layer, color_chars):
     Pass a single layer (if the frame has multiple) and ``color_chars``, the ARC
     color-symbol mapping (indexed by integer color value -> single-char label). The
     layer is partitioned into 4-connected components of equal integer value via flood
-    fill, and each component becomes a node. Nodes are ordered by their
-    top-most-left-most cell -- unique within a 64x64 layer -- and that order is the
-    node ``id``.
+    fill, and each component becomes a node. Nodes are listed in reading order of
+    their top-most-left-most cell.
 
     Each node is a dict with:
-      - ``id``: index in the top-left ordering.
+      - ``id``: the object's identity -- a short string derived from its color plus its
+        cell shape normalized to a top-left origin, so the same-looking object gets the
+        same id regardless of position or frame (lets objects be matched across frames;
+        identical-looking objects share an id).
       - ``color``: the component's ARC color character (looked up in ``color_chars``).
-      - ``hash``: a translation-invariant signature of the object -- its color plus its
-        cell shape normalized to a top-left origin -- so the same shape gets the same
-        hash regardless of position (lets objects be matched across frames, or when
-        several similar objects appear in one frame).
       - ``area``: number of cells in the component (an int, not a coordinate list).
         Counts only the component's own cells -- enclosed children are separate
         components and are not included, though ``bbox``/``h``/``w`` do span them.
@@ -263,12 +264,15 @@ def segment_layer(layer, color_chars):
         vertices where the contour changes direction (enclosed holes are not traced).
       - ``children``: ids of components directly enclosed by this node. A is a child of
         B only if B is the innermost component that fully surrounds A (every path from A
-        to the grid edge crosses B), which yields a clean nesting tree.
+        to the grid edge crosses B), which yields a clean nesting tree. When several
+        enclosed objects look identical their ids coincide; disambiguate spatially
+        (e.g. ``find(id=..., in_bbox=parent bbox)``).
 
     Returns a :class:`Segmentation` dict with:
-      - ``nodes``: list of the node dicts above, in id order.
-      - ``adjacency_list``: sorted list of ``[i, j]`` id pairs for components that share
-        a 4-connected edge (includes parent/child pairs, since they physically touch).
+      - ``nodes``: list of the node dicts above, in reading order.
+      - ``adjacency_list``: sorted, de-duplicated list of ``[id_a, id_b]`` pairs for
+        components that share a 4-connected edge (includes parent/child pairs, since
+        they physically touch).
     Query it with ``.find(color=..., area=..., ...)``.
     """
     height = len(layer)
@@ -310,7 +314,6 @@ def segment_layer(layer, color_chars):
             if c + 1 < width and comp_id[r][c + 1] != cid:
                 other = comp_id[r][c + 1]
                 adj_pairs.add((min(cid, other), max(cid, other)))
-    adjacency_list = sorted([a, b] for a, b in adj_pairs)
 
     # containment: for each component b, flood-fill its complement inward from the grid
     # border; any component whose cells are never reached is enclosed by b.
@@ -352,6 +355,11 @@ def segment_layer(layer, color_chars):
     for child_list in children:
         child_list.sort()
 
+    object_ids = [
+        _object_id(components[cid]["cells"], color_chars[max(0, min(15, components[cid]["value"]))])
+        for cid in range(n)
+    ]
+
     nodes = []
     for cid in range(n):
         comp = components[cid]
@@ -364,9 +372,8 @@ def segment_layer(layer, color_chars):
         nodes.append(
             Node(
                 {
-                    "id": cid,
+                    "id": object_ids[cid],
                     "color": color,
-                    "hash": _object_hash(cells, color),
                     "area": len(cells),
                     "bbox": [r0, c0, r1, c1],
                     "centroid": [
@@ -376,9 +383,14 @@ def segment_layer(layer, color_chars):
                     "h": r1 - r0 + 1,
                     "w": c1 - c0 + 1,
                     "boundary": [[r, c] for r, c in boundary],
-                    "children": children[cid],
+                    "children": [object_ids[child] for child in children[cid]],
                 }
             )
         )
+
+    adjacency_list = sorted(
+        {tuple(sorted((object_ids[a], object_ids[b]))) for a, b in adj_pairs}
+    )
+    adjacency_list = [list(pair) for pair in adjacency_list]
 
     return Segmentation({"nodes": nodes, "adjacency_list": adjacency_list})
