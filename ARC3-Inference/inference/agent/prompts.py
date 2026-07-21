@@ -65,7 +65,7 @@ STRUCTURED_RUNTIME_STATE_ADDENDUM = (
 
 MULTIMODAL_CONTEXT_ADDENDUM = (
     "\n\nMultimodal context:\n"
-    "- User turns include an attached image of the current ARC grid.\n"
+    "- Each turn starts with one image of the current ARC grid, attached as the final message; it is dropped from later requests in the turn, so extract what you need from it up front.\n"
     "- The image and `current_frame.ascii` are two representations of the same current frame.\n"
     "- You can use images and other tools to understand the game state and guide your strategy, each may be useful depending on the current uncertainty.\n"
 )

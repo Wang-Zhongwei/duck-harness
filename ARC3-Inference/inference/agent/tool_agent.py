@@ -137,6 +137,12 @@ def _get_env_float(name: str, default: float) -> float:
 
 _LOCAL_ANALYZER_MAX_OUTPUT = _get_env_int("LOCAL_ANALYZER_MAX_OUTPUT", 0)
 _LOCAL_ANALYZER_CONTEXT_WINDOW = _get_env_int("LOCAL_ANALYZER_CONTEXT_WINDOW", 32768)
+# When history exceeds the context budget, trim this many tokens *below* the
+# budget instead of stopping just under it. Each eviction shifts every later
+# token and invalidates the server's prefix (KV) cache for the whole request,
+# so trimming with slack lets the next several turns append without another
+# eviction. 0 keeps the old behavior: maximum context, one eviction per turn.
+_LOCAL_ANALYZER_TRIM_LOW_WATER_TOKENS = _get_env_int("LOCAL_ANALYZER_TRIM_LOW_WATER_TOKENS", 0)
 _LOCAL_ANALYZER_TIMEOUT = _get_env_float("LOCAL_ANALYZER_TIMEOUT", 0.0)
 _LOCAL_ANALYZER_TOOL_STEPS = _get_env_int("LOCAL_ANALYZER_TOOL_STEPS", 12)
 _LOCAL_ANALYZER_TOOL_TIMEOUT = _get_env_int("LOCAL_ANALYZER_TOOL_TIMEOUT", 30)
@@ -989,6 +995,7 @@ class ToolAgent:
             1024,
             _LOCAL_ANALYZER_CONTEXT_WINDOW - self._reply_reserve_tokens - self._request_safety_margin_tokens,
         )
+        self._trim_low_water_tokens = max(0, _LOCAL_ANALYZER_TRIM_LOW_WATER_TOKENS)
         self._history_messages: list[dict[str, Any]] = []
         self._session_runtime_dir: Path | None = None
         self._session_total_tokens = 0
@@ -1216,15 +1223,25 @@ class ToolAgent:
             "- Revise any item above immediately if `current_frame` or `history` contradicts it.",
         ]
 
-    def _build_user_message(self, user_prompt: str, current_frame: Frame | None) -> dict[str, Any]:
+    def _build_user_message(self, user_prompt: str) -> dict[str, Any]:
+        return {"role": "user", "content": user_prompt}
+
+    def _build_image_message(self, current_frame: Frame | None) -> dict[str, Any] | None:
+        """Build the ephemeral grid-image message appended after the user prompt.
+
+        The image rides at the very end of the first request of each turn and
+        is removed once that request completes, so every message that persists
+        into history is byte-identical to what was sent. Rewriting a persisted
+        message (the old image -> placeholder swap) invalidated the server's
+        prefix cache from that message onward on every turn.
+        """
         image_part = current_grid_image_part(current_frame)
         if image_part is None:
-            return {"role": "user", "content": user_prompt}
-
+            return None
         return {
             "role": "user",
             "content": [
-                {"type": "text", "text": f"{user_prompt}\n\nCurrent grid image:"},
+                {"type": "text", "text": "Current grid image (same board as `current_frame`):"},
                 image_part,
             ],
         }
@@ -1811,20 +1828,39 @@ class ToolAgent:
             payload["tool_choice"] = _request_tool_choice(tools)
         return _estimate_tokens(payload)
 
-    def _drop_oldest_history_block(self, history: list[dict[str, Any]], *, preserve_recent: int) -> bool:
-        removable = len(history) - preserve_recent
-        if removable <= 0:
+    @staticmethod
+    def _is_history_turn_start(message: dict[str, Any]) -> bool:
+        """A turn starts at a user message that is not the ephemeral grid-image message."""
+        if str(message.get("role", "")).strip() != "user":
             return False
-        first = history.pop(0)
-        first_role = str(first.get("role", "")).strip()
-        if first_role in {"assistant", "tool"}:
-            while history and history[0].get("role") == "tool" and len(history) > preserve_recent:
-                history.pop(0)
-            return True
-        while history and history[0].get("role") == "tool" and len(history) > preserve_recent:
-            history.pop(0)
-        while history and history[0].get("role") != "user" and len(history) > preserve_recent:
-            history.pop(0)
+        content = message.get("content")
+        if isinstance(content, list):
+            return not any(
+                isinstance(part, dict) and part.get("type") == "image_url" for part in content
+            )
+        return True
+
+    def _drop_oldest_history_turn(self, history: list[dict[str, Any]]) -> bool:
+        """Drop the oldest whole turn: its user message plus everything up to the next turn start.
+
+        Evicting whole turns (never mid-turn fragments) keeps the surviving
+        history structurally valid -- no orphaned tool results after an
+        assistant ``tool_calls`` message -- and puts every eviction on a
+        stable message boundary. The final turn is never dropped.
+        """
+        if not history:
+            return False
+        start = 0
+        while start < len(history) and not self._is_history_turn_start(history[start]):
+            start += 1
+        if start >= len(history):
+            return False
+        end = start + 1
+        while end < len(history) and not self._is_history_turn_start(history[end]):
+            end += 1
+        if end >= len(history):
+            return False
+        del history[:end]
         return True
 
     def _keep_recent_history_turns(
@@ -1898,9 +1934,11 @@ class ToolAgent:
             if str(previous_message.get("role", "")).strip() == "user":
                 history = [previous_message, *history]
         history = self._drop_until_first_user_message(history)
-        # Persisted turns keep only ASCII; the fresh user message built each
-        # ``analyze`` call carries the sole grid image, so a request never
-        # exceeds the server's per-prompt image cap regardless of run length.
+        # Persisted turns are text-only by construction: the grid image rides
+        # in an ephemeral trailing message that ``analyze`` removes after the
+        # first request of the turn. The strip below is a safety net only --
+        # rewriting a persisted message would invalidate the server's prefix
+        # cache from that point onward on every subsequent turn.
         return [self._strip_images_from_message(message) for message in history]
 
     def _trim_messages_for_context(
@@ -1908,32 +1946,37 @@ class ToolAgent:
         messages: list[dict[str, Any]],
         *,
         tools: list[dict[str, Any]] | None = None,
-        preserve_recent: int = 1,
         extra_safety_tokens: int = 0,
     ) -> list[dict[str, Any]]:
         if not messages:
             return []
         system_message = messages[0]
         history = list(messages[1:])
-        preserve_recent = max(0, preserve_recent)
         budget_tokens = max(1, self._context_budget_tokens - max(0, extra_safety_tokens))
-        while history and self._estimate_request_input_tokens([system_message, *history], tools=tools) > budget_tokens:
-            if not self._drop_oldest_history_block(history, preserve_recent=preserve_recent):
-                break
+        if self._estimate_request_input_tokens([system_message, *history], tools=tools) > budget_tokens:
+            # Once eviction is unavoidable, trim past the budget down to the
+            # low-water mark: every eviction shifts all later tokens and
+            # invalidates the server's prefix (KV) cache for the whole
+            # request, so one larger eviction followed by several append-only
+            # turns preserves far more cache reuse than one small eviction
+            # per turn. With the default low-water of 0 this trims to just
+            # under the budget, keeping maximum context.
+            target_tokens = max(1, budget_tokens - self._trim_low_water_tokens)
+            while history and self._estimate_request_input_tokens([system_message, *history], tools=tools) > target_tokens:
+                if not self._drop_oldest_history_turn(history):
+                    break
         history = self._drop_until_first_user_message(history)
         return [system_message, *history]
 
     def _force_reduce_messages(
         self,
         messages: list[dict[str, Any]],
-        *,
-        preserve_recent: int = 1,
     ) -> list[dict[str, Any]]:
         if not messages:
             return []
         system_message = messages[0]
         history = list(messages[1:])
-        if not self._drop_oldest_history_block(history, preserve_recent=max(0, preserve_recent)):
+        if not self._drop_oldest_history_turn(history):
             return list(messages)
         return [system_message, *history]
 
@@ -1987,10 +2030,19 @@ class ToolAgent:
 
         previous_history_messages = list(self._history_messages)
         preserve_history = True
+        # The grid image is a separate trailing message so persisted history
+        # never has to be rewritten (see _build_image_message).
+        image_message = self._build_image_message(current_frame)
+        initial_messages: list[dict[str, Any]] = [
+            {"role": "system", "content": self._system_prompt},
+            *self._history_messages,
+            self._build_user_message(user_prompt),
+        ]
+        if image_message is not None:
+            initial_messages.append(image_message)
         messages: list[dict[str, Any]] = self._trim_messages_for_context(
-            [{"role": "system", "content": self._system_prompt}, *self._history_messages, self._build_user_message(user_prompt, current_frame)],
+            initial_messages,
             tools=self._tools(state_path),
-            preserve_recent=1,
         )
         step_executed = False
         captured_reasoning = ""
@@ -2085,6 +2137,15 @@ class ToolAgent:
                     )
                     messages = trimmed_messages
                     continue
+                if image_message is not None:
+                    # The image only accompanies the first request of the
+                    # turn. Removing the trailing message (rather than
+                    # rewriting it into a placeholder later) leaves every
+                    # persisted message byte-identical to what was sent, so
+                    # the server's prefix cache stays warm across turns; the
+                    # board remains available as ASCII via the python tool.
+                    messages = [m for m in messages if m is not image_message]
+                    image_message = None
                 raw_reasoning = _extract_reasoning_text(result.message)
                 raw_content = _normalize_message_content(result.message.get("content", ""))
                 tool_calls = json.loads(json.dumps(result.message.get("tool_calls") or []))
