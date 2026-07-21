@@ -692,8 +692,10 @@ def _resolve_config_path(raw_path: str) -> Path:
 
 
 def _run_scoped_server_port(*, run_dir: Path, group_count: int) -> int:
+    # Stay below the kernel ephemeral range (32768-60999): a port in that
+    # range can be taken by any transient outbound socket on the worker node.
     floor = 24000
-    span = 20000
+    span = 8000
     width = max(1, int(group_count))
     usable = max(1, span - width)
     digest = hashlib.blake2b(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,6 +27,10 @@ BENCHMARK_FILE_NAME = "benchmark.json"
 EVALUATION_FILE_NAME = "evaluation.json"
 LEGACY_EVALUATION_FILE_NAME = "eval_official.json"
 SCORE_FILE_NAME = "score.json"
+TRANSCRIPTS_DIR_NAME = "transcripts"
+ARTIFACTS_DIR_NAME = "artifacts"
+TRANSCRIPT_TURN_PREFIX = "--- analysis_step="
+TRANSCRIPT_TURN_PATTERN = re.compile(r"^--- analysis_step=(\d+)")
 SCORING_VERSION = "taaf-framework-score-v1"
 FINAL_SCORE_SOURCE = "taaf.final_score"
 LIVE_SCORE_SOURCE = "taaf.GameRun._compute_final_score"
@@ -44,6 +49,12 @@ class GameTrialResult:
     state: str = ""
     action_count: int = 0
     generated_tokens: int = 0
+    uncached_input_tokens: int = 0
+    turn_count: int | None = None
+
+    @property
+    def total_tokens(self) -> int:
+        return self.generated_tokens + self.uncached_input_tokens
 
 
 @dataclass(frozen=True)
@@ -51,6 +62,35 @@ class RunEvaluation:
     run_name: str
     score: float
     games: list[GameTrialResult]
+
+    @property
+    def action_count(self) -> int:
+        return sum(game.action_count for game in self.games)
+
+    @property
+    def turn_count(self) -> int | None:
+        return _sum_optional([game.turn_count for game in self.games])
+
+    @property
+    def generated_tokens(self) -> int:
+        return sum(game.generated_tokens for game in self.games)
+
+    @property
+    def uncached_input_tokens(self) -> int:
+        return sum(game.uncached_input_tokens for game in self.games)
+
+    @property
+    def total_tokens(self) -> int:
+        return sum(game.total_tokens for game in self.games)
+
+    def usage(self) -> dict[str, Any]:
+        return {
+            "steps": self.action_count,
+            "turns": self.turn_count,
+            "generated_tokens": self.generated_tokens,
+            "uncached_input_tokens": self.uncached_input_tokens,
+            "total_tokens": self.total_tokens,
+        }
 
 
 @dataclass(frozen=True)
@@ -61,6 +101,14 @@ class GameAggregateResult:
     average_levels_completed: float = 0.0
     total_levels: int = 0
     trial_count: int = 0
+    average_steps: float = 0.0
+    average_turns: float | None = None
+    average_generated_tokens: float = 0.0
+    average_total_tokens: float = 0.0
+    total_steps: int = 0
+    total_turns: int | None = None
+    total_generated_tokens: int = 0
+    total_uncached_input_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -73,6 +121,31 @@ class EvaluationSummary:
 
 def _mean(values: list[float]) -> float:
     return statistics.fmean(values) if values else 0.0
+
+
+def _sum_optional(values: list[int | None]) -> int | None:
+    """Sum the known values, or None when nothing is known.
+
+    Turn counts come from solver artifacts that a still-running or crashed
+    trial may not have written, so a partial sum is reported rather than
+    silently counting the missing games as zero.
+    """
+    known = [value for value in values if value is not None]
+    return sum(known) if known else None
+
+
+def _mean_optional(values: list[int | float | None]) -> float | None:
+    known = [float(value) for value in values if value is not None]
+    return statistics.fmean(known) if known else None
+
+
+def _variance(values: list[int | float]) -> float:
+    return statistics.pvariance(values) if len(values) > 1 else 0.0
+
+
+def _variance_optional(values: list[int | float | None]) -> float | None:
+    known = [float(value) for value in values if value is not None]
+    return statistics.pvariance(known) if known else None
 
 
 def _stddev(values: list[float]) -> float:
@@ -325,11 +398,79 @@ def _framework_score(
 
 
 def _history_tokens(run: taaf.game.GameRun) -> int:
-    return sum(_as_int(record.generated_tokens, default=0) for record in run.history)
+    return sum(
+        _as_int(record.generated_tokens, default=0) for record in run.history
+    ) + _as_int(run.final_generated_tokens, default=0)
+
+
+def _history_uncached_input_tokens(run: taaf.game.GameRun) -> int:
+    return sum(
+        _as_int(record.uncached_input_tokens, default=0) for record in run.history
+    ) + _as_int(run.final_uncached_input_tokens, default=0)
 
 
 def _history_action_count(run: taaf.game.GameRun) -> int:
     return len(run.history)
+
+
+def _artifact_stem(game_id: str) -> str:
+    """Mirror of `inference.framework.solver.artifact_stem`."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", game_id)
+
+
+def _max_turn_in_transcript(path: Path) -> int | None:
+    """Highest `analysis_step` in a solver transcript.
+
+    A retried turn re-emits its header with the same `analysis_step`, so the
+    maximum counts observe-plan-act cycles rather than model calls.
+    """
+    highest: int | None = None
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not line.startswith(TRANSCRIPT_TURN_PREFIX):
+                continue
+            match = TRANSCRIPT_TURN_PATTERN.match(line)
+            if match is not None:
+                step = int(match.group(1))
+                highest = step if highest is None else max(highest, step)
+    return highest
+
+
+def _max_turn_in_events(path: Path) -> int | None:
+    highest: int | None = None
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            step = _as_int(event.get("analysis_step"), default=0)
+            if step > 0:
+                highest = step if highest is None else max(highest, step)
+    return highest
+
+
+def _turn_count(run_dir: Path, *, game_id: str, pass_index: int) -> int | None:
+    """Turns the solver took on one game, or None when no artifact records it.
+
+    Prefers the transcript because the events sidecar embeds every board and
+    is orders of magnitude larger to scan for the same number.
+    """
+    stem = f"{_artifact_stem(game_id)}_p{pass_index}"
+    transcript_path = run_dir / TRANSCRIPTS_DIR_NAME / f"{stem}.txt"
+    if transcript_path.exists():
+        turns = _max_turn_in_transcript(transcript_path)
+        if turns is not None:
+            return turns
+    events_path = run_dir / ARTIFACTS_DIR_NAME / f"{stem}_events.jsonl"
+    if events_path.exists():
+        return _max_turn_in_events(events_path)
+    return None
 
 
 def _benchmark_game_runs(benchmark: taaf.benchmark.Benchmark, *, path: Path) -> list[taaf.game.GameRun]:
@@ -407,6 +548,8 @@ def _game_result_from_framework_run(
     *,
     path: Path,
     run_name: str,
+    run_dir: Path,
+    pass_index: int,
 ) -> GameTrialResult:
     game_id = str(raw_run.game_id or "").strip()
     if not game_id:
@@ -424,6 +567,8 @@ def _game_result_from_framework_run(
         state=str(raw_run.state or ""),
         action_count=_history_action_count(raw_run),
         generated_tokens=_history_tokens(raw_run),
+        uncached_input_tokens=_history_uncached_input_tokens(raw_run),
+        turn_count=_turn_count(run_dir, game_id=game_id, pass_index=pass_index),
     )
 
 
@@ -455,7 +600,13 @@ def _run_evaluations_from_benchmark(run_dir: Path) -> list[RunEvaluation]:
         seen_game_ids: set[str] = set()
         games: list[GameTrialResult] = []
         for raw_run in pass_runs:
-            game = _game_result_from_framework_run(raw_run, path=path, run_name=run_name)
+            game = _game_result_from_framework_run(
+                raw_run,
+                path=path,
+                run_name=run_name,
+                run_dir=run_dir,
+                pass_index=pass_idx,
+            )
             if game.game_id in seen_game_ids:
                 raise ValueError(f"{path}: duplicate game_id {game.game_id!r} in {run_name}.")
             seen_game_ids.add(game.game_id)
@@ -507,6 +658,14 @@ def evaluate_runs(run_dirs: list[Path], *, environments_dir: str | None = None) 
                 average_levels_completed=_mean([game.levels_completed for game in trial_games]),
                 total_levels=max((game.total_levels for game in trial_games), default=0),
                 trial_count=len(trial_games),
+                average_steps=_mean([float(game.action_count) for game in trial_games]),
+                average_turns=_mean_optional([game.turn_count for game in trial_games]),
+                average_generated_tokens=_mean([float(game.generated_tokens) for game in trial_games]),
+                average_total_tokens=_mean([float(game.total_tokens) for game in trial_games]),
+                total_steps=sum(game.action_count for game in trial_games),
+                total_turns=_sum_optional([game.turn_count for game in trial_games]),
+                total_generated_tokens=sum(game.generated_tokens for game in trial_games),
+                total_uncached_input_tokens=sum(game.uncached_input_tokens for game in trial_games),
             )
         )
 
@@ -556,12 +715,29 @@ def _aggregate_runs_for_output(run_name: str, runs: list[RunEvaluation]) -> dict
                 "completion_rate": completion_rate,
                 "trial_count": len(trial_games),
                 "score_source": _score_source_label([game.score_source for game in trial_games]),
+                "steps": sum(game.action_count for game in trial_games),
+                "turns": _sum_optional([game.turn_count for game in trial_games]),
+                "generated_tokens": sum(game.generated_tokens for game in trial_games),
+                "uncached_input_tokens": sum(game.uncached_input_tokens for game in trial_games),
+                "total_tokens": sum(game.total_tokens for game in trial_games),
+                "steps_mean": _mean([float(game.action_count) for game in trial_games]),
+                "turns_mean": _mean_optional([game.turn_count for game in trial_games]),
+                "total_tokens_mean": _mean([float(game.total_tokens) for game in trial_games]),
             }
         )
 
+    all_games = [game for run in runs for game in run.games]
     return {
         "run_name": run_name,
         "score": _mean([game["score"] for game in games]) if games else _mean([run.score for run in runs]),
+        "usage": {
+            "steps": sum(game.action_count for game in all_games),
+            "turns": _sum_optional([game.turn_count for game in all_games]),
+            "generated_tokens": sum(game.generated_tokens for game in all_games),
+            "uncached_input_tokens": sum(game.uncached_input_tokens for game in all_games),
+            "total_tokens": sum(game.total_tokens for game in all_games),
+        },
+        "trials": {run.run_name: run.usage() for run in runs},
         "score_source": _score_source_label(
             [
                 game.score_source
@@ -625,6 +801,37 @@ def build_score_payload(summary: EvaluationSummary, *, run_dirs: list[Path]) -> 
     trial_count = 0
     for game in summary.games:
         trial_scores = {run_name: score for run_name, score in game.run_scores}
+        trial_games = [
+            trial_game
+            for run in summary.runs
+            for trial_game in run.games
+            if trial_game.game_id == game.game_id
+        ]
+        steps = {trial_game.run_name: trial_game.action_count for trial_game in trial_games}
+        turns = {trial_game.run_name: trial_game.turn_count for trial_game in trial_games}
+        generated_tokens = {
+            trial_game.run_name: trial_game.generated_tokens for trial_game in trial_games
+        }
+        uncached_input_tokens = {
+            trial_game.run_name: trial_game.uncached_input_tokens for trial_game in trial_games
+        }
+        total_tokens = {trial_game.run_name: trial_game.total_tokens for trial_game in trial_games}
+        tokens_per_step = {
+            trial_game.run_name: (
+                trial_game.total_tokens / trial_game.action_count
+                if trial_game.action_count > 0
+                else None
+            )
+            for trial_game in trial_games
+        }
+        tokens_per_turn = {
+            trial_game.run_name: (
+                trial_game.total_tokens / trial_game.turn_count
+                if trial_game.turn_count is not None and trial_game.turn_count > 0
+                else None
+            )
+            for trial_game in trial_games
+        }
         trial_count += len(trial_scores)
         games[game.game_id] = {
             "score": game.average_score,
@@ -632,6 +839,29 @@ def build_score_payload(summary: EvaluationSummary, *, run_dirs: list[Path]) -> 
             "trial_count": len(trial_scores),
             "seed_scores": trial_scores,
             "seed_count": len(trial_scores),
+            "steps": steps,
+            "steps_mean": _mean([float(value) for value in steps.values()]),
+            "steps_variance": _variance(list(steps.values())),
+            "turns": turns,
+            "turns_mean": _mean_optional(list(turns.values())),
+            "turns_variance": _variance_optional(list(turns.values())),
+            "generated_tokens": generated_tokens,
+            "generated_tokens_mean": _mean([float(value) for value in generated_tokens.values()]),
+            "generated_tokens_variance": _variance(list(generated_tokens.values())),
+            "uncached_input_tokens": uncached_input_tokens,
+            "uncached_input_tokens_mean": _mean(
+                [float(value) for value in uncached_input_tokens.values()]
+            ),
+            "uncached_input_tokens_variance": _variance(list(uncached_input_tokens.values())),
+            "total_tokens": total_tokens,
+            "total_tokens_mean": _mean([float(value) for value in total_tokens.values()]),
+            "total_tokens_variance": _variance(list(total_tokens.values())),
+            "tokens_per_step": tokens_per_step,
+            "tokens_per_step_mean": _mean_optional(list(tokens_per_step.values())),
+            "tokens_per_step_variance": _variance_optional(list(tokens_per_step.values())),
+            "tokens_per_turn": tokens_per_turn,
+            "tokens_per_turn_mean": _mean_optional(list(tokens_per_turn.values())),
+            "tokens_per_turn_variance": _variance_optional(list(tokens_per_turn.values())),
         }
 
     git_commits = [
@@ -642,10 +872,64 @@ def build_score_payload(summary: EvaluationSummary, *, run_dirs: list[Path]) -> 
     ]
     created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
+    all_games = [game for run in summary.runs for game in run.games]
+    usage_totals = {
+        "steps": sum(game.action_count for game in all_games),
+        "turns": _sum_optional([game.turn_count for game in all_games]),
+        "generated_tokens": sum(game.generated_tokens for game in all_games),
+        "uncached_input_tokens": sum(game.uncached_input_tokens for game in all_games),
+        "total_tokens": sum(game.total_tokens for game in all_games),
+    }
+    turns_known = sum(1 for game in all_games if game.turn_count is not None)
+    usage_values = {
+        "steps": [game.action_count for game in all_games],
+        "turns": [game.turn_count for game in all_games],
+        "generated_tokens": [game.generated_tokens for game in all_games],
+        "uncached_input_tokens": [game.uncached_input_tokens for game in all_games],
+        "total_tokens": [game.total_tokens for game in all_games],
+        "tokens_per_step": [
+            game.total_tokens / game.action_count if game.action_count > 0 else None
+            for game in all_games
+        ],
+        "tokens_per_turn": [
+            game.total_tokens / game.turn_count
+            if game.turn_count is not None and game.turn_count > 0
+            else None
+            for game in all_games
+        ],
+    }
+
     return {
-        "version": 1,
+        "version": 2,
         "score": summary.overall_score,
         "games": games,
+        "usage": {
+            "totals": usage_totals,
+            "per_run": {run.run_name: run.usage() for run in summary.runs},
+            "mean": {
+                "steps": _mean([float(value) for value in usage_values["steps"]]),
+                "turns": _mean_optional(usage_values["turns"]),
+                "generated_tokens": _mean([float(value) for value in usage_values["generated_tokens"]]),
+                "uncached_input_tokens": _mean([float(value) for value in usage_values["uncached_input_tokens"]]),
+                "total_tokens": _mean([float(value) for value in usage_values["total_tokens"]]),
+                "tokens_per_step": _mean_optional(usage_values["tokens_per_step"]),
+                "tokens_per_turn": _mean_optional(usage_values["tokens_per_turn"]),
+            },
+            "variance": {
+                "steps": _variance(usage_values["steps"]),
+                "turns": _variance_optional(usage_values["turns"]),
+                "generated_tokens": _variance(usage_values["generated_tokens"]),
+                "uncached_input_tokens": _variance(usage_values["uncached_input_tokens"]),
+                "total_tokens": _variance(usage_values["total_tokens"]),
+                "tokens_per_step": _variance_optional(usage_values["tokens_per_step"]),
+                "tokens_per_turn": _variance_optional(usage_values["tokens_per_turn"]),
+            },
+            "turns_source": "solver transcript/events `analysis_step`",
+            "turns_coverage": {
+                "games_with_turns": turns_known,
+                "games_total": len(all_games),
+            },
+        },
         "metadata": {
             "created_at": created_at,
             "scoring_version": SCORING_VERSION,
@@ -703,6 +987,10 @@ def save_score_file(
     return path
 
 
+def _format_optional_float(value: float | None) -> str:
+    return f"{value:.1f}" if value is not None else "n/a"
+
+
 def render_evaluation(summary: EvaluationSummary) -> str:
     lines = [
         "Evaluation Result",
@@ -726,13 +1014,19 @@ def render_evaluation(summary: EvaluationSummary) -> str:
             f"  {game.game_id}: avg_score={game.average_score:.6f} "
             f"max_score={max_score:.6f} "
             f"avg_levels_completed={game.average_levels_completed:.2f}/{game.total_levels} "
-            f"trials={game.trial_count}"
+            f"trials={game.trial_count} "
+            f"avg_steps={game.average_steps:.1f} "
+            f"avg_turns={_format_optional_float(game.average_turns)} "
+            f"avg_tokens={game.average_total_tokens:.0f}"
         )
         for run_game in run_games:
             lines.append(
                 f"    {run_game.run_name}: score={run_game.score:.6f} "
                 f"levels_completed={run_game.levels_completed:.0f}/{run_game.total_levels} "
-                f"state={run_game.state or 'unknown'}"
+                f"state={run_game.state or 'unknown'} "
+                f"steps={run_game.action_count} "
+                f"turns={run_game.turn_count if run_game.turn_count is not None else 'n/a'} "
+                f"tokens={run_game.total_tokens}"
             )
         lines.append("")
 
@@ -761,6 +1055,29 @@ def render_evaluation(summary: EvaluationSummary) -> str:
     lines.append("Per-Trial Scores")
     for run in summary.runs:
         lines.append(f"  {run.run_name}: {run.score:.6f}")
+
+    all_games = [game for run in summary.runs for game in run.games]
+    lines.append("")
+    lines.append("Per-Trial Usage")
+    for run in summary.runs:
+        lines.append(
+            f"  {run.run_name}: steps={run.action_count} "
+            f"turns={run.turn_count if run.turn_count is not None else 'n/a'} "
+            f"tokens={run.total_tokens}"
+        )
+    turns_known = sum(1 for game in all_games if game.turn_count is not None)
+    total_turns = _sum_optional([game.turn_count for game in all_games])
+    lines.append(
+        f"  TOTAL: steps={sum(game.action_count for game in all_games)} "
+        f"turns={total_turns if total_turns is not None else 'n/a'} "
+        f"tokens={sum(game.total_tokens for game in all_games)}"
+    )
+    if turns_known < len(all_games):
+        lines.append(
+            f"  (turns known for {turns_known}/{len(all_games)} game runs; "
+            "missing solver transcripts are excluded)"
+        )
+
     lines.append("")
     lines.append(f"Overall Score: {summary.overall_score:.4f} +/- {summary.overall_score_std:.4f}")
     return "\n".join(lines)
