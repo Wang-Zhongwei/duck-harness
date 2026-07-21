@@ -39,24 +39,24 @@ def test_frame_diff_preserves_isolated_cells_and_groups_color_transitions():
         "cells_changed": 3,
         "groups": [
             {
-                "from": "B",
-                "to": "W",
+                "from_color": "B",
+                "to_color": "W",
                 "count": 1,
-                "bbox": [[1, 1], [1, 1]],
+                "bbox": [1, 1, 1, 1],
                 "cells": [[1, 1]],
             },
             {
-                "from": "W",
-                "to": "B",
+                "from_color": "W",
+                "to_color": "B",
                 "count": 1,
-                "bbox": [[2, 2], [2, 2]],
+                "bbox": [2, 2, 2, 2],
                 "cells": [[2, 2]],
             },
             {
-                "from": "W",
-                "to": "w",
+                "from_color": "W",
+                "to_color": "w",
                 "count": 1,
-                "bbox": [[0, 0], [0, 0]],
+                "bbox": [0, 0, 0, 0],
                 "cells": [[0, 0]],
             },
         ],
@@ -94,3 +94,13 @@ def test_frame_diff_rejects_different_shapes():
     outcome = _run("result = frame_diff(previous_frame, current_frame)", before, after)
 
     assert "ValueError: frame_diff requires equal frame shapes" in outcome["error"]
+
+
+def test_frame_diff_group_missing_key_points_at_the_renamed_field():
+    before = _frame([[0, 0], [0, 0]], step=1)
+    after = _frame([[5, 0], [0, 0]], step=2)
+
+    outcome = _run("result = last_transition.diff['groups'][0]['from']", before, after)
+
+    assert "from_color" in outcome["error"]
+    assert "single color char" in outcome["error"]

@@ -149,7 +149,36 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
     DIFF_CELL_DETAIL_LIMIT = 12
 
 
+    DIFF_GROUP_FIELDS = ("from_color", "to_color", "count", "bbox", "cells")
+
+    # Names that read like diff-group fields but are not. ``from``/``to`` were renamed
+    # to ``from_color``/``to_color`` because they hold a single ARC color char, not a
+    # node -- the old names invited ``group['from']['color']``.
+    DIFF_GROUP_FIELD_HINTS = {
+        "from": "from_color (a single color char, e.g. 'B')",
+        "to": "to_color (a single color char, e.g. 'B')",
+        "color": "from_color / to_color",
+        "colors": "from_color / to_color",
+        "n": "count",
+        "size": "count",
+        "pixels": "count",
+        "px": "count",
+    }
+
+
     class DiffGroup(dict):
+        def __missing__(self, key):
+            hint = DIFF_GROUP_FIELD_HINTS.get(key)
+            fields = ", ".join(DIFF_GROUP_FIELDS)
+            if hint is not None:
+                raise KeyError(
+                    f"diff group has no field {key!r}; use {hint}. "
+                    f"Diff-group fields: {fields}."
+                )
+            raise KeyError(
+                f"diff group has no field {key!r}. Diff-group fields: {fields}."
+            )
+
         def __repr__(self):
             if self["count"] <= DIFF_CELL_DETAIL_LIMIT:
                 return dict.__repr__(self)
@@ -194,15 +223,18 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
             groups.append(
                 DiffGroup(
                     {
-                        "from": before_color,
-                        "to": after_color,
+                        "from_color": before_color,
+                        "to_color": after_color,
                         "count": len(cells),
-                        "bbox": [[min(rs), min(cs)], [max(rs), max(cs)]],
+                        # Flat [r0, c0, r1, c1], same layout as a segmentation node's bbox.
+                        "bbox": [min(rs), min(cs), max(rs), max(cs)],
                         "cells": cells,
                     }
                 )
             )
-        groups.sort(key=lambda group: (-group["count"], group["from"], group["to"]))
+        groups.sort(
+            key=lambda group: (-group["count"], group["from_color"], group["to_color"])
+        )
         return {"cells_changed": cells_changed, "groups": groups}
 
 
