@@ -3,7 +3,7 @@
     "model_name": "vrfai/Qwen3.6-27B-FP8",
     "base_url": "http://127.0.0.1:1234/v1",
     "provider": "vllm",
-    "context_window": 32768
+    "context_window": 49152
   },
   "experiments": {
     "root_dir": "runs"
@@ -67,6 +67,7 @@
     "tool_steps": 0,
     "tool_timeout": 30,
     "tool_output_tokens": 1024,
+    "trim_low_water_tokens": 16384,
     "save_request_logs": false
   },
   "chat": {
