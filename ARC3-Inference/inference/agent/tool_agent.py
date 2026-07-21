@@ -164,7 +164,7 @@ _RESPONSE_META_MAX_CHARS = 4000
 _PYTHON_TOOL_DESCRIPTION = (
     "Run one ephemeral Python snippet against preloaded ASCII game state. Available globals: "
     "`current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, "
-    "`valid_actions`, `last_action_result`, `frame_diff(before, after)` (alias `diff`), "
+    "`valid_actions`, `last_action_result`, `frame_diff(before, after)`, "
     "and `action(actions)` for executing one or more real environment actions. "
     "`current_frame` and each `history[*].frame` expose only `.ascii`, `.segmentation`, `.step`, `.level`, and `.shape`; "
     "`history[-1].frame` is the current post-action frame, not the previous frame. "
@@ -1004,7 +1004,6 @@ class ToolAgent:
         self._current_valid_actions: list[str] = []
         self._last_step_summary: dict[str, Any] | None = None
         self._last_action_result: dict[str, Any] | None = None
-        self._completed_level_model_snapshot: dict[str, str] = {}
         self._summarized_knowledge = _empty_world_model()
 
     def _headers(self) -> dict[str, str]:
@@ -1032,7 +1031,6 @@ class ToolAgent:
             self._session_generated_tokens = 0
             self._last_step_summary = None
             self._last_action_result = None
-            self._completed_level_model_snapshot = {}
             self._summarized_knowledge = _empty_world_model()
 
     @property
@@ -1176,33 +1174,10 @@ class ToolAgent:
             "open_questions",
             "current_plan",
         )
-        if summary.get("level_transition"):
-            self._completed_level_model_snapshot = {
-                key: value
-                for key in level_fields
-                if (value := self._summarized_knowledge.get(key, ""))
-            }
-        elif summary.get("run_complete") or summary.get("game_over"):
-            self._completed_level_model_snapshot = {}
-
         if summary.get("level_transition") or summary.get("run_complete") or summary.get("game_over"):
             for key in level_fields:
                 self._summarized_knowledge[key] = ""
 
-    def _completed_level_model_lines(self) -> list[str]:
-        entries = (
-            ("World model", "world_model"),
-            ("Goal model", "goal_model"),
-            ("Action model", "action_model"),
-            ("Recent findings", "recent_findings"),
-            ("Open questions", "open_questions"),
-            ("Plan", "current_plan"),
-        )
-        return [
-            f"- {label}: {value}"
-            for label, key in entries
-            if (value := self._completed_level_model_snapshot.get(key, ""))
-        ]
 
     def _summarized_knowledge_lines(self) -> list[str]:
         entries = [
@@ -1306,32 +1281,10 @@ class ToolAgent:
             state_line += f" out of observed max level {observed_max_level} so far"
         state_line += "."
         lines.append(state_line)
-        is_level_transition = bool(
-            previous_step_summary and previous_step_summary.get("level_transition")
-        )
-        if is_level_transition:
-            completed_model_lines = self._completed_level_model_lines()
-            lines.append(
-                "Completed-level models are pasted below for one-time transfer into cross-level notes:"
-            )
-            if completed_model_lines:
-                lines.extend(completed_model_lines)
-            else:
-                lines.append("- No completed-level model fields were saved.")
-            lines.append(
-                "These level-specific fields have now been cleared and this temporary snapshot will not be shown after the next environment action."
-            )
-            if self._model_update_mode == "tool":
-                lines.append(
-                    "REQUIRED before executing any environment action: call `update_memory` with `cross_level_notes` summarizing the transferable entities, mechanics, action rules, goal structure, and useful uncertainties above. Preserve useful existing cross-level notes, but omit level-specific coordinates and layout details."
-                )
-            else:
-                lines.append(
-                    "REQUIRED before executing any new action: write a `Cross-level notes:` section summarizing the transferable entities, mechanics, action rules, goal structure, and useful uncertainties above. Preserve useful existing cross-level notes, but omit level-specific coordinates and layout details."
-                )
         tool_line = (
             "Only tool: `python`. It receives `current_frame`, `previous_frame`, `history`, "
-            "`transitions`, `last_transition`, `valid_actions`, `last_action_result`, and `action(actions)`."
+            "`transitions`, `last_transition`, `valid_actions`, `last_action_result`, "
+            "`frame_diff(before, after)`, and `action(actions)`."
         )
         if self._model_update_mode == "tool":
             tool_line = (
@@ -1344,13 +1297,22 @@ class ToolAgent:
                 tool_line,
                 "Only letter-coded board views and lightweight metadata are exposed; raw numeric color IDs are not available.",
                 "Keep tool output compact: use `current_frame.segmentation` as the primary view, and `current_frame.ascii` only for a small specific region; never print full boards.",
-                "For the most recent change, compare `previous_frame` to `current_frame`, or `last_transition.before_frame` to `last_transition.after_frame`; `history[-1].frame` is the current frame, not the previous one.",
+                "For the most recent change, read `last_transition.diff`; for any other pair of frames use `frame_diff(before, after)`. `history[-1].frame` is the current frame, not the previous one.",
                 "Use Python to inspect the evidence, refine your models from the newest history, and search or score candidate actions or short sequences against the current goal as you currently understand it.",
                 "Maintain compact working models of what the current level seems to contain, what actions appear to do, what the goal seems to be, what is still uncertain, and what plan currently looks best.",
             ]
         )
 
-        if not is_level_transition:
+        if previous_step_summary and previous_step_summary.get("level_transition"):
+            if self._model_update_mode == "tool":
+                lines.append(
+                    "REQUIRED before executing any environment action: call `update_memory` with `cross_level_notes` that MERGE transferable entities, mechanics, action rules, goal structure, and useful uncertainties from prior levels into the existing cross-level notes. Cross-level notes are cumulative across ALL levels of the run: keep earlier levels' still-useful insights and add new ones; never overwrite or drop them. Omit level-specific coordinates and layout details."
+                )
+            else:
+                lines.append(
+                    "REQUIRED before executing any new action: write a `Cross-level notes:` section that MERGES transferable entities, mechanics, action rules, goal structure, and useful uncertainties from prior levels into the existing cross-level notes. Cross-level notes are cumulative across ALL levels of the run: keep earlier levels' still-useful insights and add new ones; never overwrite or drop them. Omit level-specific coordinates and layout details."
+                )
+        else:
             lines.append(
                 "Below you are provided with the persistent memory from your previous turns. "
             )
@@ -2219,7 +2181,7 @@ class ToolAgent:
                         "Then investigate and revise your working world model of what the level contains, what actions appear to do, what the current goal seems to be, and what plan looks best. "
                         f"{model_update_guidance}"
                         "Call the `python` tool with code that inspects `current_frame`, `previous_frame`, `last_transition`, `history`, or `valid_actions` -- use `current_frame.segmentation` as the primary view, and `.ascii` only for a small specific region -- "
-                        "compare `previous_frame` to `current_frame` for the most recent change, "
+                        "reads `last_transition.diff` for the most recent change"
                         "derives a compact board summary, programs a small search or scorer over candidate actions or short sequences, "
                         "then call `action(actions)` inside Python with the best valid action or ordered batch that your code selected. "
                         f"{TOOL_CALL_FORMAT_GUIDANCE}"

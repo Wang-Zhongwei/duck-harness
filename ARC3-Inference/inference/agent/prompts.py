@@ -10,7 +10,7 @@ TOOL_CALL_FORMAT_GUIDANCE = (
 
 GAME_OVERVIEW_ADDENDUM = (
     "\n\nGame overview:\n"
-    "- You are solving a multi-level grid puzzle game. \n"
+    "- You are solving a multi-level grid puzzle game.\n"
     "- You are called repeatedly over the course of a run. Treat each turn as one observe-plan-act cycle: re-understand the current state from the newest frame, update your working world model, choose the next best action or short sequence against the goal as currently understood, execute it, and expect to re-evaluate on the next turn from the updated state.\n"
     "- Your job is to solve the entire game by clearing every level, not just the current screen.\n"
     "- Levels often build on earlier mechanics, but layouts and interactions can still change between levels.\n"
@@ -42,11 +42,8 @@ STRUCTURED_RUNTIME_STATE_ADDENDUM = (
     "- `segmentation['adjacency_list']` is a list of `[i, j]` node-id pairs whose objects share an edge.\n"
     "- Find objects with e.g. `segmentation.find(color='B', px=24).one()` -- `.one()` errors unless exactly one match, so use it whenever you expect a unique object. `segmentation.find(color='R')` returns a plain list in id order (`.first()` for the top-left-most). Other keywords: `not_color=`, `min_px=`/`max_px=`, `in_bbox=(r0, c0, r1, c1)`, `hash=`; color keywords accept a char or a set.\n"
     "- Nodes are per-frame snapshots; identity across frames is `hash` (position-invariant: same color+shape, anywhere). After `action(...)`, re-find in the fresh segmentation, e.g. `seg.find(hash=h).one()`.\n"
-    
     "- The raw numeric grid is intentionally not exposed. Use `current_frame.segmentation` as your primary view of the board -- objects, colors, shapes, containment, adjacency, and cross-frame object hashes. Use `current_frame.ascii` only to read a small, specific region; do not scan the whole board with it.\n"
-
-    "- `history` is a chronological list of action/frame snapshots.\n"
-    "- `history` is a Python list of objects, not a dict.\n"
+    "- `history` is a chronological Python list of action/frame snapshot objects, not a dict.\n"
     "- Each history entry exposes only `.action` and `.frame`; entries are not subscriptable like `entry['action']`.\n"
     "- Each `history[i].frame` is the frame after `history[i].action`, and is the same frame-view type as `current_frame`.\n"
     "- Important history semantics: when `history` is non-empty, `history[-1].frame` is the same latest/post-action board as `current_frame`. It is not the previous board. To inspect the state before the latest action, use `previous_frame` or `history[-2].frame` when available.\n"

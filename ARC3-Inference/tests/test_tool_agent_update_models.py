@@ -130,7 +130,7 @@ def test_tool_mode_replaces_prose_parsing_without_losing_any_model_fields() -> N
     assert agent._summarized_knowledge["goal_model"] == "Reach the target."
 
 
-def test_level_transition_requires_model_authored_cross_level_summary() -> None:
+def test_level_transition_omits_completed_level_transfer_prompt() -> None:
     agent = _agent("tool")
     agent._summarized_knowledge.update(
         {
@@ -174,19 +174,16 @@ def test_level_transition_requires_model_authored_cross_level_summary() -> None:
         previous_step_summary=summary,
     )
     assert "You have progressed to a new level!\nCurrent state: step 10, level 2." in prompt
-    assert "Completed-level models are pasted below" in prompt
-    assert "- World model: Red advances the cycle; green reverses it." in prompt
-    assert "- Goal model: Find the cycle offset that completes the board." in prompt
-    assert "this temporary snapshot will not be shown after the next environment action" in prompt
+    assert "- Cross-level notes: Colored blocks occupy a fixed cycle." in prompt
+    assert "Completed-level models are pasted below" not in prompt
+    assert "temporary snapshot" not in prompt
     assert "REQUIRED before executing any environment action" in prompt
     assert "call `update_memory` with `cross_level_notes`" in prompt
 
 
-def test_assistant_mode_requires_cross_level_notes_section_after_transition() -> None:
+def test_assistant_mode_omits_completed_level_transfer_prompt() -> None:
     agent = _agent("assistant")
-    agent._completed_level_model_snapshot = {
-        "world_model": "Buttons rotate a fixed cycle."
-    }
+    agent._summarized_knowledge["cross_level_notes"] = "Buttons rotate a fixed cycle."
     summary = {"level_transition": True, "level": 2, "executed_count": 1}
 
     prompt = agent._build_user_prompt(
@@ -196,7 +193,8 @@ def test_assistant_mode_requires_cross_level_notes_section_after_transition() ->
         previous_step_summary=summary,
     )
 
-    assert "- World model: Buttons rotate a fixed cycle." in prompt
+    assert "- Cross-level notes: Buttons rotate a fixed cycle." in prompt
+    assert "Completed-level models are pasted below" not in prompt
     assert "REQUIRED before executing any new action" in prompt
     assert "write a `Cross-level notes:` section" in prompt
 
