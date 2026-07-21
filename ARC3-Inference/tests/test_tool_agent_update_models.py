@@ -43,26 +43,14 @@ def test_model_update_mode_is_explicit_and_validated() -> None:
         raise AssertionError("invalid model-update mode was accepted")
 
 
-def test_tool_mode_adds_complete_optional_update_schema(tmp_path: Path) -> None:
+def test_tool_mode_exposes_single_python_tool_with_update_memory_runtime(tmp_path: Path) -> None:
     agent = _agent("tool")
-    functions = {
-        tool["function"]["name"]: tool["function"]
-        for tool in agent._tools(_state_path(tmp_path))
-    }
+    tools = agent._tools(_state_path(tmp_path))
 
-    assert set(functions) == {"python", "update_memory"}
-    parameters = functions["update_memory"]["parameters"]
-    assert set(parameters["properties"]) == {
-        "world_model",
-        "goal_model",
-        "action_model",
-        "recent_findings",
-        "open_questions",
-        "plan",
-        "cross_level_notes",
-    }
-    assert "required" not in parameters
-    assert parameters["additionalProperties"] is False
+    assert [tool["function"]["name"] for tool in tools] == ["python"]
+    description = tools[0]["function"]["description"]
+    assert "update_memory(...)" in description
+    assert set(tools[0]["function"]["parameters"]["properties"]) == {"code"}
 
 
 def test_assistant_mode_keeps_original_single_tool_and_prose_parser(tmp_path: Path) -> None:
@@ -87,18 +75,16 @@ def test_tool_mode_replaces_prose_parsing_without_losing_any_model_fields() -> N
     )
     assert agent._summarized_knowledge == _empty_world_model()
 
-    payload = json.loads(
-        agent._run_update_memory_tool(
-            {
-                "world_model": "  A token moves.  ",
-                "goal_model": "Reach the target.",
-                "action_model": "RIGHT shifts the token.",
-                "recent_findings": "The last move changed the token only.",
-                "open_questions": "Whether walls wrap.",
-                "plan": "Probe the right edge.",
-                "cross_level_notes": "Target colors transfer.",
-            }
-        ).content
+    payload = agent._apply_memory_update(
+        {
+            "world_model": "  A token moves.  ",
+            "goal_model": "Reach the target.",
+            "action_model": "RIGHT shifts the token.",
+            "recent_findings": "The last move changed the token only.",
+            "open_questions": "Whether walls wrap.",
+            "plan": "Probe the right edge.",
+            "cross_level_notes": "Target colors transfer.",
+        }
     )
 
     assert payload["updated"] == [
@@ -120,10 +106,8 @@ def test_tool_mode_replaces_prose_parsing_without_losing_any_model_fields() -> N
         "cross_level_notes": "Target colors transfer.",
     }
 
-    second = json.loads(
-        agent._run_update_memory_tool(
-            {"world_model": "A token moves horizontally.", "goal_model": ""}
-        ).content
+    second = agent._apply_memory_update(
+        {"world_model": "A token moves horizontally.", "goal_model": ""}
     )
     assert second == {"updated": ["world_model"]}
     assert agent._summarized_knowledge["world_model"] == "A token moves horizontally."
@@ -178,7 +162,7 @@ def test_level_transition_omits_completed_level_transfer_prompt() -> None:
     assert "Completed-level models are pasted below" not in prompt
     assert "temporary snapshot" not in prompt
     assert "REQUIRED before executing any environment action" in prompt
-    assert "call `update_memory` with `cross_level_notes`" in prompt
+    assert "call `update_memory(cross_level_notes=...)`" in prompt
 
 
 def test_assistant_mode_omits_completed_level_transfer_prompt() -> None:
@@ -227,8 +211,9 @@ def test_update_memory_has_no_predictor_backtest_or_action_gate(tmp_path: Path) 
 
     assert dispatch.step_executed is True
     assert callback_calls == [{"actions": [{"action": "RIGHT"}]}]
-    update_schema = agent._tools(state_path)[1]["function"]["parameters"]
-    assert "predictor_code" not in update_schema["properties"]
+    tools = agent._tools(state_path)
+    assert [tool["function"]["name"] for tool in tools] == ["python"]
+    assert "predictor_code" not in tools[0]["function"]["parameters"]["properties"]
 
 
 def test_prompts_are_mode_specific() -> None:
@@ -241,8 +226,8 @@ def test_prompts_are_mode_specific() -> None:
 
     assert "exactly one tool: `python`" in assistant_prompt
     assert "`update_memory`" not in assistant_prompt
-    assert "two tools: `python` and `update_memory`" in tool_prompt
-    assert "`update_memory` saves your models" in tool_prompt
+    assert "exactly one tool: `python`" in tool_prompt
+    assert "`update_memory(...)` is a function available inside every `python` tool call" in tool_prompt
     assert "`previous_frame`" in tool_prompt
     assert "`current_frame`" in tool_prompt
     assert "`last_action`" in tool_prompt
@@ -254,10 +239,10 @@ def test_tool_mode_prompts_use_prediction_check_not_parsing_history(tmp_path: Pa
     description = {
         tool["function"]["name"]: tool["function"]["description"]
         for tool in agent._tools(_state_path(tmp_path))
-    }["update_memory"]
+    }["python"]
     assert "assistant-text parsing" not in description
     assert "previous_frame" in description
-    assert "last_action" in description
+    assert "update_memory" in description
 
     prompt = agent._build_user_prompt(
         3,
@@ -268,3 +253,24 @@ def test_tool_mode_prompts_use_prediction_check_not_parsing_history(tmp_path: Pa
     assert "A useful check: would these models have predicted" in prompt
     assert "put `update_memory` first" not in prompt
     assert "Below are the persistent memory carried" in prompt
+
+
+def test_python_tool_update_memory_updates_agent_state_end_to_end(tmp_path: Path) -> None:
+    agent = _agent("tool")
+    state_path = _state_path(tmp_path)
+
+    dispatch = agent._run_python_tool(
+        state_path,
+        {
+            "code": (
+                "r = update_memory(world_model='A token moves.',\n"
+                "                  cross_level_notes='Targets keep their shape.')\n"
+                "print(r['updated'])"
+            )
+        },
+    )
+
+    assert agent._summarized_knowledge["world_model"] == "A token moves."
+    assert agent._summarized_knowledge["cross_level_notes"] == "Targets keep their shape."
+    assert "error" not in json.loads(dispatch.content)
+    assert "['world_model', 'cross_level_notes']" in dispatch.content

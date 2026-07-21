@@ -116,6 +116,7 @@ COMPACT_TOOL_SESSION_ADDENDUM = (
 
 MODEL_UPDATE_TOOL_ADDENDUM = (
     "\n\nPersistent memory updates:\n"
-    "- `update_memory` saves your models and notes across turns: the world, goal, and action models plus cross-level notes, open questions, recent findings, and plan.\n"
-    "- Call it when the models you are carrying are no longer consistent with what you recently observed, or when your understanding of the game changes.\n"
+    "- `update_memory(...)` is a function available inside every `python` tool call, alongside `action(...)`. It saves your models and notes across turns.\n"
+    "- Pass any subset of these string keyword arguments; omitted fields keep their previous value: `world_model` (entities and mechanics of the current level), `goal_model` (win-condition hypothesis and sub-goals), `action_model` (observed effect, preconditions, and constraints of each action), `recent_findings` (compact new evidence from the latest transitions), `open_questions` (competing hypotheses still to test), `plan` (current high-level plan), `cross_level_notes` (lessons that transfer to future levels; no level-specific coordinates).\n"
+    "- Call it in the same snippet where the evidence appears, e.g. right after an `action(...)` whose observed effect contradicts the models you are carrying, or when your understanding of the game changes. Multi-line strings are fine; use triple quotes.\n"
 )

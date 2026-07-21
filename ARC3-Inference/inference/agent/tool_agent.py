@@ -165,7 +165,10 @@ _PYTHON_TOOL_DESCRIPTION = (
     "Run one ephemeral Python snippet against preloaded ASCII game state. Available globals: "
     "`current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, "
     "`valid_actions`, `last_action_result`, `frame_diff(before, after)`, "
-    "and `action(actions)` for executing one or more real environment actions. "
+    "`action(actions)` for executing one or more real environment actions, "
+    "and `update_memory(...)` for saving persistent memory fields. "
+    "When the effect of an action (compare `previous_frame` to `current_frame` via `last_transition.diff`) "
+    "contradicts the models you are carrying, call `update_memory(...)` in the same snippet. "
     "`current_frame` and each `history[*].frame` expose only `.ascii`, `.segmentation`, `.step`, `.level`, and `.shape`; "
     "`history[-1].frame` is the current post-action frame, not the previous frame. "
     "For before/after diffs, use `last_transition.diff` or `frame_diff(previous_frame, current_frame)`; it preserves every changed cell. "
@@ -390,8 +393,6 @@ def _build_system_prompt(
     prompt += VISUAL_GAME_ADDENDUM
     prompt += PYTHON_ADDENDUM
     tool_inventory = "You have exactly one tool: `python`."
-    if model_update_mode == "tool":
-        tool_inventory = "You have two tools: `python` and `update_memory`."
     prompt += COMPACT_TOOL_SESSION_ADDENDUM.format(
         tool_output_tokens=tool_output_tokens,
         tool_inventory=tool_inventory,
@@ -1288,8 +1289,8 @@ class ToolAgent:
         )
         if self._model_update_mode == "tool":
             tool_line = (
-                "Tools: `python` inspects state and executes `action(actions)`; `update_memory` saves "
-                "revised persistent memory fields."
+                "Only tool: `python`. It inspects state and provides `action(actions)` to execute "
+                "environment actions and `update_memory(...)` to save revised persistent memory fields."
             )
         lines.extend(
             [
@@ -1303,20 +1304,19 @@ class ToolAgent:
             ]
         )
 
+        lines.append(
+            "Below are the persistent memory carried from your previous turns. "
+        )
+        lines.extend(self._summarized_knowledge_lines())
         if previous_step_summary and previous_step_summary.get("level_transition"):
             if self._model_update_mode == "tool":
                 lines.append(
-                    "REQUIRED before executing any environment action: call `update_memory` with `cross_level_notes` that MERGE transferable entities, mechanics, action rules, goal structure, and useful uncertainties from prior levels into the existing cross-level notes. Cross-level notes are cumulative across ALL levels of the run: keep earlier levels' still-useful insights and add new ones; never overwrite or drop them. Omit level-specific coordinates and layout details."
+                    "REQUIRED before executing any environment action: in your first `python` call, call `update_memory(cross_level_notes=...)` with notes that MERGE transferable entities, mechanics, action rules, goal structure, and useful uncertainties from prior levels into the existing cross-level notes above. Cross-level notes are cumulative across ALL levels of the run: keep earlier levels' still-useful insights and add new ones; never overwrite or drop them. Omit level-specific coordinates and layout details."
                 )
             else:
                 lines.append(
-                    "REQUIRED before executing any new action: write a `Cross-level notes:` section that MERGES transferable entities, mechanics, action rules, goal structure, and useful uncertainties from prior levels into the existing cross-level notes. Cross-level notes are cumulative across ALL levels of the run: keep earlier levels' still-useful insights and add new ones; never overwrite or drop them. Omit level-specific coordinates and layout details."
+                    "REQUIRED before executing any new action: write a `Cross-level notes:` section that MERGES transferable entities, mechanics, action rules, goal structure, and useful uncertainties from prior levels into the existing cross-level notes above. Cross-level notes are cumulative across ALL levels of the run: keep earlier levels' still-useful insights and add new ones; never overwrite or drop them. Omit level-specific coordinates and layout details."
                 )
-        else:
-            lines.append(
-                "Below you are provided with the persistent memory from your previous turns. "
-            )
-            lines.extend(self._summarized_knowledge_lines())
 
         lines.append(
             "You may call `action(actions)` more than once in one Python snippet if your search or control loop needs it, "
@@ -1339,10 +1339,13 @@ class ToolAgent:
             )
         else:
             lines.append(
-                "Use `update_memory` to revise persistent memory fields when recent history "
-                "contradicts the current models, `last_action` reveals new evidence, or you "
-                "have a high-level insight, question, or plan worth preserving. Do not record "
-                "trivial details."
+                "Call `update_memory(...)` inside your `python` code -- in the same snippet "
+                "where the evidence appears -- when recent history contradicts the current "
+                "models, `last_action` reveals new evidence, or you have a high-level insight, "
+                "question, or plan worth preserving. Do not record trivial details. "
+                "A useful check: would these models have predicted the observed effect of "
+                "`last_action`? Compare `previous_frame` to `current_frame` via "
+                "`last_transition.diff`; if not, revise the wrong field."
             )
         lines.append(TOOL_CALL_FORMAT_GUIDANCE)
         if "MOUSE" in _normalize_valid_actions(valid_actions):
@@ -1372,57 +1375,6 @@ class ToolAgent:
                 },
             }
         ]
-        if self._model_update_mode == "tool":
-            model_fields = {
-                "world_model": (
-                    "What the current level contains and how it behaves: the entities, objects, or "
-                    "regions present, their properties and relationships, and the mechanics governing them."
-                ),
-                "goal_model": (
-                    "Your current hypothesis for the win condition -- what completing the level or the "
-                    "whole game requires, plus any sub-goals along the way."
-                ),
-                "action_model": (
-                    "What each available action does: its observed effects, preconditions, and "
-                    "constraints, including actions that changed only HUD or timer state."
-                ),
-                "recent_findings": (
-                    "Compact new evidence from the most recent transition(s) -- what the last action(s) "
-                    "revealed that informed or corrected your models."
-                ),
-                "open_questions": (
-                    "Unresolved questions or competing hypotheses you still need to test to reduce "
-                    "uncertainty about the level."
-                ),
-                "plan": (
-                    "The high-level plan you intend to follow to test your hypotheses or finish "
-                    "the current level, given the current models and evidence."
-                ),
-                "cross_level_notes": (
-                    "Mechanics, rules, or lessons likely to transfer to future levels. Keep these "
-                    "general; avoid level-specific coordinates or layout details."
-                ),
-            }
-            tools.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "update_memory",
-                        "description": (
-                            "Save revisions to persistent memory. Pass any subset of the fields; "
-                            "omitted or empty fields remain unchanged."
-                        ),
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                name: {"type": "string", "description": description}
-                                for name, description in model_fields.items()
-                            },
-                            "additionalProperties": False,
-                        },
-                    },
-                }
-            )
         return tools
 
     def _chat_completion(
@@ -1695,6 +1647,7 @@ class ToolAgent:
             timeout_seconds=self._python_timeout,
             initial_state=_serialized_runtime_state(),
             action_handler=_handle_action,
+            memory_handler=self._apply_memory_update,
         )
 
         action_results = [
@@ -1733,7 +1686,7 @@ class ToolAgent:
             step_executed=step_executed,
         )
 
-    def _run_update_memory_tool(self, arguments: dict[str, Any]) -> _ToolDispatchResult:
+    def _apply_memory_update(self, fields: dict[str, Any]) -> dict[str, Any]:
         field_map = {
             "world_model": "world_model",
             "goal_model": "goal_model",
@@ -1746,21 +1699,16 @@ class ToolAgent:
         invalid_fields = [
             name
             for name in field_map
-            if name in arguments
-            and arguments[name] not in (None, "")
-            and not isinstance(arguments[name], str)
+            if name in fields
+            and fields[name] not in (None, "")
+            and not isinstance(fields[name], str)
         ]
         if invalid_fields:
-            return _ToolDispatchResult(
-                json.dumps(
-                    {"error": f"Model fields must be strings: {', '.join(invalid_fields)}"},
-                    indent=2,
-                )
-            )
+            return {"error": f"Model fields must be strings: {', '.join(invalid_fields)}"}
 
         updated: list[str] = []
         for argument_name, state_name in field_map.items():
-            value = arguments.get(argument_name)
+            value = fields.get(argument_name)
             if not isinstance(value, str) or not value.strip():
                 continue
             self._summarized_knowledge[state_name] = _normalize_summary_text(
@@ -1768,14 +1716,12 @@ class ToolAgent:
                 max_chars=None,
             )
             updated.append(argument_name)
-        return _ToolDispatchResult(json.dumps({"updated": updated}, indent=2))
+        return {"updated": updated}
 
     def _dispatch_tool(self, state_path: Path, name: str, arguments: dict[str, Any]) -> _ToolDispatchResult:
         self._ensure_session(state_path)
         if name == "python":
             return self._run_python_tool(state_path, arguments)
-        if name == "update_memory" and self._model_update_mode == "tool":
-            return self._run_update_memory_tool(arguments)
         return _ToolDispatchResult(json.dumps({"error": f"Unknown tool: {name}"}, indent=2))
 
     def _estimate_request_input_tokens(
@@ -2174,7 +2120,7 @@ class ToolAgent:
                     )
                     if self._model_update_mode == "tool":
                         model_update_guidance = (
-                            "If the observed effect of `last_action` was not what your carried models predicted, save what you learned with `update_memory` (any subset of fields). "
+                            "If the observed effect of `last_action` was not what your carried models predicted, save what you learned by calling `update_memory(...)` in your python code. "
                         )
                     followup_prompt = (
                         f"{followup_prefix}"
@@ -2300,7 +2246,7 @@ class ToolAgent:
             f"request_safety_margin_tokens: {self._request_safety_margin_tokens}\n"
             f"tool_output_tokens: {self._tool_output_tokens}\n"
             f"yield_seconds: {self._yield_seconds if self._yield_seconds is not None else 'disabled'}\n"
-            f"available_tools: {'python, update_memory' if self._model_update_mode == 'tool' else 'python'}\n"
+            f"available_tools: python\n"
             f"model_update_mode: {self._model_update_mode}\n"
             f"python_timeout_seconds: {self._python_timeout}\n"
             f"history_messages: {len(self._history_messages)}\n"

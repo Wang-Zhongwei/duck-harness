@@ -439,6 +439,42 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
             return action_result
 
         runtime_globals["action"] = action
+
+        def update_memory(world_model=None, goal_model=None, action_model=None,
+                          recent_findings=None, open_questions=None, plan=None,
+                          cross_level_notes=None):
+            fields = {
+                name: value
+                for name, value in {
+                    "world_model": world_model,
+                    "goal_model": goal_model,
+                    "action_model": action_model,
+                    "recent_findings": recent_findings,
+                    "open_questions": open_questions,
+                    "plan": plan,
+                    "cross_level_notes": cross_level_notes,
+                }.items()
+                if value is not None
+            }
+            if not fields:
+                raise ValueError(
+                    "update_memory() needs at least one field, e.g. "
+                    "update_memory(world_model=...)."
+                )
+            non_string = [name for name, value in fields.items() if not isinstance(value, str)]
+            if non_string:
+                raise TypeError(
+                    f"update_memory() fields must be strings: {', '.join(sorted(non_string))}"
+                )
+            _send({"type": "memory", "fields": fields})
+            reply = _recv()
+            if reply.get("type") == "memory_error":
+                raise RuntimeError(str(reply.get("error", "update_memory failed")))
+            if reply.get("type") != "memory_result":
+                raise RuntimeError("Invalid update_memory response from sandbox host.")
+            return {"updated": list(reply.get("updated") or [])}
+
+        runtime_globals["update_memory"] = update_memory
         _refresh_state(initial.get("state") or {})
 
         try:
@@ -523,6 +559,7 @@ def run_sandboxed_python(
     timeout_seconds: int,
     initial_state: dict[str, Any],
     action_handler: Callable[[list[dict[str, Any]]], dict[str, Any]],
+    memory_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="rgb_python_tool_") as sandbox_dir:
         host_action_results: list[dict[str, Any]] = []
@@ -629,6 +666,38 @@ def run_sandboxed_python(
                         "state": action_result_payload.get("state") or {},
                     },
                 )
+                continue
+
+            if msg_type == "memory":
+                if memory_handler is None:
+                    _send_json_line(
+                        process.stdin,
+                        {
+                            "type": "memory_error",
+                            "error": "update_memory is not available in this session.",
+                        },
+                    )
+                    continue
+                try:
+                    memory_payload = memory_handler(dict(message.get("fields") or {}))
+                except Exception:  # noqa: BLE001
+                    memory_payload = {"error": "update_memory failed in sandbox host."}
+                if memory_payload.get("error"):
+                    _send_json_line(
+                        process.stdin,
+                        {
+                            "type": "memory_error",
+                            "error": str(memory_payload["error"]),
+                        },
+                    )
+                else:
+                    _send_json_line(
+                        process.stdin,
+                        {
+                            "type": "memory_result",
+                            "updated": list(memory_payload.get("updated") or []),
+                        },
+                    )
                 continue
 
             if msg_type in {"final", "error"}:
