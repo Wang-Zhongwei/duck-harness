@@ -19,6 +19,7 @@ from typing import Any
 import taaf.benchmark
 import taaf.game
 
+from inference.tools.server_metrics import build_server_block
 from inference.utils.run_artifacts import is_selectable_run_dir_name, run_dir_sort_key
 
 DEFAULT_CONFIG_PATH = "configs/eval.json"
@@ -903,6 +904,10 @@ def build_score_payload(summary: EvaluationSummary, *, run_dirs: list[Path]) -> 
         "version": 2,
         "score": summary.overall_score,
         "games": games,
+        # Serving-side metrics recovered from each trial's vLLM server.log.
+        # Throughput and cache hit rates are what make two runs' token costs
+        # comparable -- or reveal that they are not.
+        "server": build_server_block(trial_dirs),
         "usage": {
             "totals": usage_totals,
             "per_run": {run.run_name: run.usage() for run in summary.runs},
