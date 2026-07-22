@@ -151,13 +151,14 @@ def test_level_transition_omits_completed_level_transfer_prompt() -> None:
             "current_plan",
         )
     )
-    prompt = agent._build_user_prompt(
+    intro, rest = agent._build_user_prompt(
         9,
         valid_actions=["MOUSE"],
         current_frame=Frame(grid=((0, 0), (0, 0)), step=9, level=2),
         previous_step_summary=summary,
     )
-    assert "You have progressed to a new level!\nCurrent state: step 10, level 2." in prompt
+    prompt = f"{intro}\n{rest}"
+    assert "- You have progressed to a new level!\n\nCurrent state:\n- Step 10, level 2." in prompt
     assert "- Cross-level notes: Colored blocks occupy a fixed cycle." in prompt
     assert "Completed-level models are pasted below" not in prompt
     assert "temporary snapshot" not in prompt
@@ -170,12 +171,13 @@ def test_assistant_mode_omits_completed_level_transfer_prompt() -> None:
     agent._summarized_knowledge["cross_level_notes"] = "Buttons rotate a fixed cycle."
     summary = {"level_transition": True, "level": 2, "executed_count": 1}
 
-    prompt = agent._build_user_prompt(
+    intro, rest = agent._build_user_prompt(
         1,
         valid_actions=["MOUSE"],
         current_frame=Frame(grid=((0, 0), (0, 0)), step=1, level=2),
         previous_step_summary=summary,
     )
+    prompt = f"{intro}\n{rest}"
 
     assert "- Cross-level notes: Buttons rotate a fixed cycle." in prompt
     assert "Completed-level models are pasted below" not in prompt
@@ -244,15 +246,16 @@ def test_tool_mode_prompts_use_prediction_check_not_parsing_history(tmp_path: Pa
     assert "previous_frame" in description
     assert "update_memory" in description
 
-    prompt = agent._build_user_prompt(
+    intro, rest = agent._build_user_prompt(
         3,
         valid_actions=["RIGHT"],
         current_frame=Frame(grid=((0, 0), (0, 0)), step=3, level=1),
         previous_step_summary={"executed_count": 1, "level": 1},
     )
+    prompt = f"{intro}\n{rest}"
     assert "A useful check: would these models have predicted" in prompt
     assert "put `update_memory` first" not in prompt
-    assert "Below are the persistent memory carried" in prompt
+    assert "Persistent memory (carried from your previous turns):" in prompt
 
 
 def test_python_tool_update_memory_updates_agent_state_end_to_end(tmp_path: Path) -> None:

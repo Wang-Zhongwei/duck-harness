@@ -1,15 +1,17 @@
 """Step-window eviction and the per-step before/after board images.
 
 Context is bounded by a rolling window of whole steps rather than by tokens.
-Each step's user message carries both board images and persists verbatim, so
-prefix-cache reuse is scoped to the requests within one step -- the window
-shifts the prefix on every new step by design.
+Only the step being opened carries its two board images; older steps keep a
+placeholder where each board was. The window shifts the prefix on every new
+step by design, so prefix-cache reuse is scoped to one step's requests --
+which is also why rewriting history to drop the images costs nothing.
 """
 
 import pytest
 
 from inference.agent.runtime_state import Frame, HistoryEntry
-from inference.agent.tool_agent import ToolAgent
+from inference.agent.tool_agent import _STEP_IMAGE_PLACEHOLDER as _PLACEHOLDER
+from inference.agent.tool_agent import ToolAgent, _render_user_message_text
 
 
 def _agent(*, context_steps: int = 5, images: bool = False) -> ToolAgent:
@@ -47,12 +49,11 @@ def _image_step(index: int) -> list[dict]:
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": f"user prompt {index}"},
-                {"type": "text", "text": "Executed action(s): DOWN."},
-                {"type": "text", "text": "Before action(s) frame:"},
+                {"type": "text", "text": f"user prompt {index}\n- Board before this sequence:"},
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,BBBB"}},
-                {"type": "text", "text": "After action(s) frame:"},
+                {"type": "text", "text": "- Board after this sequence (the current board):"},
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                {"type": "text", "text": f"rest of prompt {index}"},
             ],
         },
         {
@@ -132,15 +133,48 @@ def test_keep_recent_steps_is_a_no_op_below_the_window() -> None:
     assert agent._keep_recent_steps(history, max_steps=0) == history
 
 
-def test_persistent_history_keeps_images_and_only_the_last_n_steps() -> None:
+def test_persistent_history_strips_images_and_keeps_only_the_last_n_steps() -> None:
+    """Only the step being opened carries images; history keeps placeholders.
+
+    Two boards cost ~2k tokens, so carrying them across the window would
+    spend a third of a 32k budget re-sending boards already described in text.
+    """
     agent = _agent(context_steps=2, images=True)
     system = {"role": "system", "content": "system prompt"}
     steps = [_image_step(i) for i in range(5)]
     persisted = agent._persistent_history_messages([system, *(m for s in steps for m in s)])
-    assert persisted == [m for s in steps[-2:] for m in s]
-    # Images survive into history verbatim -- nothing is rewritten.
-    image_parts = [p for m in persisted if isinstance(m.get("content"), list) for p in m["content"]]
-    assert sum(1 for p in image_parts if p.get("type") == "image_url") == 4
+
+    # The last two steps survive, identical except that boards became placeholders.
+    expected = [agent._strip_images_from_message(m) for s in steps[-2:] for m in s]
+    assert persisted == expected
+    parts = [p for m in persisted if isinstance(m.get("content"), list) for p in m["content"]]
+    assert not any(p.get("type") == "image_url" for p in parts)
+    assert sum(1 for p in parts if p.get("text") == _PLACEHOLDER) == 4  # 2 steps x 2 boards
+
+
+def test_placeholder_still_marks_a_step_boundary() -> None:
+    """Eviction must land on whole steps after the images are gone."""
+    agent = _agent(context_steps=2, images=True)
+    stripped = agent._strip_images_from_message(_image_step(0)[0])
+    assert agent._is_history_turn_start(stripped)
+    assert not agent._is_history_turn_start({"role": "user", "content": "You have not acted yet."})
+
+
+def test_request_carries_two_images_regardless_of_window_size() -> None:
+    agent = _agent(context_steps=4, images=True)
+    system = {"role": "system", "content": "system prompt"}
+    history: list[dict] = []
+    for index in range(8):
+        request = agent._trim_messages_for_context([system, *history, *_image_step(index)[:1]])
+        images = [
+            part
+            for message in request
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+            if part.get("type") == "image_url"
+        ]
+        assert len(images) == 2, f"step {index} sent {len(images)} images"
+        history = agent._persistent_history_messages([*request, *_image_step(index)[1:]])
 
 
 def test_persistent_history_strips_images_in_legacy_token_only_mode() -> None:
@@ -149,6 +183,32 @@ def test_persistent_history_strips_images_in_legacy_token_only_mode() -> None:
     persisted = agent._persistent_history_messages([system, *_image_step(0)])
     parts = [p for m in persisted if isinstance(m.get("content"), list) for p in m["content"]]
     assert not any(p.get("type") == "image_url" for p in parts)
+
+
+# --- image cost in the token estimate ---------------------------------------
+
+
+def test_images_are_costed_as_vision_tokens_not_base64_length() -> None:
+    """A base64 board is ~7.3k chars but only 1024 vision tokens.
+
+    Counting the data URL verbatim overshot by ~1.4k tokens per image, which
+    at two images per step evicted steps that comfortably fit.
+    """
+    agent = _agent(images=True)
+    blob = "data:image/png;base64," + "A" * 7300
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "prompt"},
+                {"type": "image_url", "image_url": {"url": blob}},
+                {"type": "image_url", "image_url": {"url": blob}},
+            ],
+        }
+    ]
+    estimate = agent._estimate_request_input_tokens(messages)
+    assert 2 * 1024 <= estimate < 2 * 1024 + 200  # two images plus a little text
+    assert estimate < len(blob) // 3  # nowhere near the base64 character count
 
 
 # --- token-budget safety net ------------------------------------------------
@@ -170,15 +230,10 @@ def test_trim_messages_evicts_oldest_turns_first() -> None:
     assert agent._estimate_request_input_tokens(trimmed) <= 1024
 
 
-def test_trim_messages_low_water_trims_past_budget() -> None:
+def test_trim_messages_leaves_an_under_budget_request_alone() -> None:
     agent = _agent()
     agent._context_budget_tokens = 1024
-    agent._trim_low_water_tokens = 512
     system = {"role": "system", "content": "system prompt"}
-    messages = [system, *(m for i in range(40) for m in _turn(i))]
-    trimmed = agent._trim_messages_for_context(messages)
-    assert agent._estimate_request_input_tokens(trimmed) <= 1024 - 512 + 64  # one turn of slack
-
     small = [system, *_turn(0), *_turn(1)]
     assert agent._trim_messages_for_context(small) == small
 
@@ -201,58 +256,78 @@ def test_step_boundary_frames_walks_back_by_executed_count(executed_count: int, 
     agent = _agent()
     history = [HistoryEntry(action="DOWN", frame=_frame(fill, step=fill)) for fill in range(4)]
     current = history[-1].frame
-    before, after, executed = agent._step_boundary_frames(
+    before, after = agent._step_boundary_frames(
         current,
         history,
         {"executed_count": executed_count, "executed_actions": ["DOWN"] * executed_count},
     )
     assert after is current
     assert before is not None and before.grid[0][0] == expected_fill
-    assert executed == ["DOWN"] * executed_count
 
 
 def test_step_boundary_frames_has_no_before_frame_on_the_first_step() -> None:
     agent = _agent()
     history = [HistoryEntry(action="", frame=_frame(0))]
-    before, after, executed = agent._step_boundary_frames(history[-1].frame, history, None)
+    before, after = agent._step_boundary_frames(history[-1].frame, history, None)
     assert before is None
     assert after is history[-1].frame
-    assert executed == []
 
 
-def test_build_user_message_carries_both_boards(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_user_message_places_boards_inside_the_narrative(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MULTIMODAL_CONTEXT", "current_grid")
     agent = _agent(images=True)
     message = agent._build_user_message(
-        "prompt text",
+        "intro text",
+        "rest text",
         before_frame=_frame(1),
         after_frame=_frame(2),
-        executed_actions=["DOWN", "DOWN"],
     )
     content = message["content"]
     assert message["role"] == "user"
-    assert content[0] == {"type": "text", "text": "prompt text"}
-    assert content[1]["text"] == "Executed action(s): DOWN, DOWN."
     assert [part["type"] for part in content] == [
         "text",
-        "text",
-        "text",
         "image_url",
         "text",
         "image_url",
+        "text",
     ]
+    assert content[0]["text"] == "intro text\n- Board before this sequence:"
+    assert content[2]["text"] == "- Board after this sequence (the current board):"
+    assert content[4]["text"] == "rest text"
     # Distinct boards render to distinct images.
-    assert content[3]["image_url"]["url"] != content[5]["image_url"]["url"]
+    assert content[1]["image_url"]["url"] != content[3]["image_url"]["url"]
+
+
+def test_transcript_rendering_marks_image_positions(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MULTIMODAL_CONTEXT", "current_grid")
+    agent = _agent(images=True)
+    message = agent._build_user_message(
+        "intro text",
+        "rest text",
+        before_frame=_frame(1),
+        after_frame=_frame(2),
+    )
+    assert _render_user_message_text(message) == (
+        "intro text\n- Board before this sequence:\n"
+        "[board image here]\n"
+        "- Board after this sequence (the current board):\n"
+        "[board image here]\n"
+        "rest text"
+    )
+    # Text-only messages render verbatim.
+    assert _render_user_message_text({"role": "user", "content": "plain"}) == "plain"
 
 
 def test_build_user_message_falls_back_to_text_without_images() -> None:
     agent = _agent(images=False)
-    message = agent._build_user_message("prompt text", before_frame=_frame(1), after_frame=_frame(2))
-    assert message == {"role": "user", "content": "prompt text"}
+    message = agent._build_user_message("intro text", "rest text", before_frame=_frame(1), after_frame=_frame(2))
+    assert message == {"role": "user", "content": "intro text\nrest text"}
 
 
 def test_build_user_message_omits_before_board_on_the_first_step(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MULTIMODAL_CONTEXT", "current_grid")
     agent = _agent(images=True)
-    content = agent._build_user_message("prompt text", before_frame=None, after_frame=_frame(2))["content"]
-    assert [part["type"] for part in content] == ["text", "text", "image_url"]
+    content = agent._build_user_message("intro text", "rest text", before_frame=None, after_frame=_frame(2))["content"]
+    assert [part["type"] for part in content] == ["text", "image_url", "text"]
+    assert content[0]["text"] == "intro text\n- Current board (no prior action to compare against):"
+    assert content[2]["text"] == "rest text"
