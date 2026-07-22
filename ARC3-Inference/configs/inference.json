@@ -64,7 +64,7 @@
     "temperature": 0.6,
     "top_p": 0.95,
     "top_k": 20,
-    "timeout": 120,
+    "timeout": 240,
     "tool_steps": 0,
     "tool_timeout": 30,
     "tool_output_tokens": 1024,
