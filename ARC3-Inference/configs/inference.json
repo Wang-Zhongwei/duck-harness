@@ -49,6 +49,7 @@
     "generation_config": "vllm",
     "language_model_only": false,
     "enable_prefix_caching": true,
+    "max_images": 12,
     "tool_call_parser": "qwen3_coder",
     "reasoning_parser": "qwen3",
     "default_chat_template_kwargs": {
@@ -67,7 +68,8 @@
     "tool_steps": 0,
     "tool_timeout": 30,
     "tool_output_tokens": 1024,
-    "trim_low_water_tokens": 16384,
+    "trim_low_water_tokens": 0,
+    "context_steps": 5,
     "save_request_logs": false
   },
   "chat": {

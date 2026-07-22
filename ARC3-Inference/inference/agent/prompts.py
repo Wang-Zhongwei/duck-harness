@@ -63,8 +63,8 @@ STRUCTURED_RUNTIME_STATE_ADDENDUM = (
 
 MULTIMODAL_CONTEXT_ADDENDUM = (
     "\n\nMultimodal context:\n"
-    "- Each turn starts with one image of the current ARC grid, attached as the final message; it is dropped from later requests in the turn, so extract what you need from it up front.\n"
-    "- The image and `current_frame.ascii` are two representations of the same current frame.\n"
+    "- Each step's user message carries two images of the ARC grid: the board before the previous step's action(s), and the board after them.\n"
+    "- The before image is `previous_frame` and the after image is `current_frame`, so you can cross-check what you read visually against the board in Python.\n"
     "- You can use images and other tools to understand the game state and guide your strategy, each may be useful depending on the current uncertainty.\n"
 )
 

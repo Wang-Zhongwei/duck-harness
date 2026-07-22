@@ -143,6 +143,11 @@ _LOCAL_ANALYZER_CONTEXT_WINDOW = _get_env_int("LOCAL_ANALYZER_CONTEXT_WINDOW", 3
 # so trimming with slack lets the next several turns append without another
 # eviction. 0 keeps the old behavior: maximum context, one eviction per turn.
 _LOCAL_ANALYZER_TRIM_LOW_WATER_TOKENS = _get_env_int("LOCAL_ANALYZER_TRIM_LOW_WATER_TOKENS", 0)
+# Rolling context window measured in whole steps rather than tokens. Each step
+# carries two board images, so a request holds at most 2 * this many images and
+# the server's --limit-mm-per-prompt must allow that. 0 restores the previous
+# token-only trimming with images stripped from history.
+_LOCAL_ANALYZER_CONTEXT_STEPS = _get_env_int("LOCAL_ANALYZER_CONTEXT_STEPS", 5)
 _LOCAL_ANALYZER_TIMEOUT = _get_env_float("LOCAL_ANALYZER_TIMEOUT", 0.0)
 _LOCAL_ANALYZER_TOOL_STEPS = _get_env_int("LOCAL_ANALYZER_TOOL_STEPS", 12)
 _LOCAL_ANALYZER_TOOL_TIMEOUT = _get_env_int("LOCAL_ANALYZER_TOOL_TIMEOUT", 30)
@@ -997,6 +1002,8 @@ class ToolAgent:
             _LOCAL_ANALYZER_CONTEXT_WINDOW - self._reply_reserve_tokens - self._request_safety_margin_tokens,
         )
         self._trim_low_water_tokens = max(0, _LOCAL_ANALYZER_TRIM_LOW_WATER_TOKENS)
+        self._context_steps = max(0, _LOCAL_ANALYZER_CONTEXT_STEPS)
+        self._grid_images_enabled = current_grid_image_enabled()
         self._history_messages: list[dict[str, Any]] = []
         self._session_runtime_dir: Path | None = None
         self._session_total_tokens = 0
@@ -1199,28 +1206,67 @@ class ToolAgent:
             "- Revise any item above immediately if `current_frame` or `history` contradicts it.",
         ]
 
-    def _build_user_message(self, user_prompt: str) -> dict[str, Any]:
-        return {"role": "user", "content": user_prompt}
+    def _step_boundary_frames(
+        self,
+        current_frame: Frame | None,
+        history_entries: list[HistoryEntry],
+        previous_step_summary: dict[str, Any] | None,
+    ) -> tuple[Frame | None, Frame | None, list[str]]:
+        """``(before, after, action names)`` for the actions run in the previous step.
 
-    def _build_image_message(self, current_frame: Frame | None) -> dict[str, Any] | None:
-        """Build the ephemeral grid-image message appended after the user prompt.
-
-        The image rides at the very end of the first request of each turn and
-        is removed once that request completes, so every message that persists
-        into history is byte-identical to what was sent. Rewriting a persisted
-        message (the old image -> placeholder swap) invalidated the server's
-        prefix cache from that message onward on every turn.
+        ``history_entries[-1].frame`` is the post-action board -- the same one
+        as ``current_frame`` -- so the board before a batch of ``n`` actions is
+        ``history_entries[-(n + 1)].frame``. Mirrors how the python runtime
+        derives ``previous_frame`` from ``last_transition.before_frame``.
         """
-        image_part = current_grid_image_part(current_frame)
-        if image_part is None:
-            return None
-        return {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Current grid image (same board as `current_frame`):"},
-                image_part,
-            ],
-        }
+        executed: list[str] = []
+        count = 0
+        if isinstance(previous_step_summary, dict):
+            raw_actions = previous_step_summary.get("executed_actions")
+            if isinstance(raw_actions, list):
+                executed = [str(name).strip() for name in raw_actions if str(name).strip()]
+            try:
+                count = int(previous_step_summary.get("executed_count") or 0)
+            except (TypeError, ValueError):
+                count = 0
+        count = max(count, len(executed), 1)
+        index = len(history_entries) - 1 - count
+        before_frame = history_entries[index].frame if 0 <= index < len(history_entries) else None
+        return before_frame, current_frame, executed
+
+    def _build_user_message(
+        self,
+        user_prompt: str,
+        *,
+        before_frame: Frame | None = None,
+        after_frame: Frame | None = None,
+        executed_actions: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Build the step's user message: prompt text plus the before/after boards.
+
+        Both images stay in the message for every request of the step and
+        persist into history, so the model can re-read the boards through its
+        whole tool loop instead of relying on whatever it transcribed into
+        text on the first request. Because only step-opening messages carry
+        images, ``_is_history_turn_start`` can recognize step boundaries
+        structurally.
+        """
+        after_part = current_grid_image_part(after_frame)
+        if after_part is None:
+            return {"role": "user", "content": user_prompt}
+
+        content: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
+        before_part = current_grid_image_part(before_frame)
+        if before_part is None:
+            content.append({"type": "text", "text": "Current frame (no prior action to compare against):"})
+        else:
+            action_label = ", ".join(executed_actions or []) or "unknown"
+            content.append({"type": "text", "text": f"Executed action(s): {action_label}."})
+            content.append({"type": "text", "text": "Before action(s) frame:"})
+            content.append(before_part)
+            content.append({"type": "text", "text": "After action(s) frame:"})
+        content.append(after_part)
+        return {"role": "user", "content": content}
 
 
     def _build_user_prompt(
@@ -1736,17 +1782,39 @@ class ToolAgent:
             payload["tool_choice"] = _request_tool_choice(tools)
         return _estimate_tokens(payload)
 
-    @staticmethod
-    def _is_history_turn_start(message: dict[str, Any]) -> bool:
-        """A turn starts at a user message that is not the ephemeral grid-image message."""
+    def _is_history_turn_start(self, message: dict[str, Any]) -> bool:
+        """A step starts at the user message carrying that step's board images.
+
+        Mid-step follow-up prompts ("You have not acted yet...") are plain
+        string-content user messages, so keying on the image parts keeps them
+        from being mistaken for step boundaries. With grid images disabled
+        there is nothing to key on, so every user message opens a step -- the
+        pre-image behavior.
+        """
         if str(message.get("role", "")).strip() != "user":
             return False
         content = message.get("content")
         if isinstance(content, list):
-            return not any(
+            return any(
                 isinstance(part, dict) and part.get("type") == "image_url" for part in content
             )
-        return True
+        return not self._grid_images_enabled
+
+    def _keep_recent_steps(self, history: list[dict[str, Any]], *, max_steps: int) -> list[dict[str, Any]]:
+        """Keep only the most recent ``max_steps`` whole steps.
+
+        A fixed step window is the primary context bound: it makes prompt
+        length a function of steps rather than tokens, which keeps the two
+        board images per step affordable and makes eviction predictable. It
+        also means the prefix shifts every step, so prefix-cache reuse is
+        deliberately scoped to the requests *within* one step.
+        """
+        if max_steps <= 0:
+            return list(history)
+        starts = [index for index, message in enumerate(history) if self._is_history_turn_start(message)]
+        if len(starts) <= max_steps:
+            return list(history)
+        return list(history[starts[len(starts) - max_steps] :])
 
     def _drop_oldest_history_turn(self, history: list[dict[str, Any]]) -> bool:
         """Drop the oldest whole turn: its user message plus everything up to the next turn start.
@@ -1829,6 +1897,12 @@ class ToolAgent:
         if not trimmed:
             return []
         trimmed_history = trimmed[1:]
+        if self._context_steps > 0:
+            # Step-window mode: whole steps only, images kept verbatim.
+            # ``_trim_messages_for_context`` already applied the window, which
+            # caps images per request at 2 * context_steps -- the server's
+            # ``--limit-mm-per-prompt`` (server.max_images) must allow that.
+            return self._drop_until_first_user_message(trimmed_history)
         history = self._keep_recent_history_turns(
             trimmed_history,
             max_turns=_PERSISTENT_HISTORY_ASSISTANT_TURNS,
@@ -1842,11 +1916,8 @@ class ToolAgent:
             if str(previous_message.get("role", "")).strip() == "user":
                 history = [previous_message, *history]
         history = self._drop_until_first_user_message(history)
-        # Persisted turns are text-only by construction: the grid image rides
-        # in an ephemeral trailing message that ``analyze`` removes after the
-        # first request of the turn. The strip below is a safety net only --
-        # rewriting a persisted message would invalidate the server's prefix
-        # cache from that point onward on every subsequent turn.
+        # Legacy token-only mode (context_steps = 0): history must stay
+        # text-only or a long run would blow the server's image cap.
         return [self._strip_images_from_message(message) for message in history]
 
     def _trim_messages_for_context(
@@ -1860,6 +1931,11 @@ class ToolAgent:
             return []
         system_message = messages[0]
         history = list(messages[1:])
+        # The step window is the primary bound and applies to the request as
+        # built -- including the step being opened -- so a request never holds
+        # more than ``context_steps`` steps (2 * that many board images).
+        if self._context_steps > 0:
+            history = self._keep_recent_steps(history, max_steps=self._context_steps)
         budget_tokens = max(1, self._context_budget_tokens - max(0, extra_safety_tokens))
         if self._estimate_request_input_tokens([system_message, *history], tools=tools) > budget_tokens:
             # Once eviction is unavoidable, trim past the budget down to the
@@ -1938,16 +2014,21 @@ class ToolAgent:
 
         previous_history_messages = list(self._history_messages)
         preserve_history = True
-        # The grid image is a separate trailing message so persisted history
-        # never has to be rewritten (see _build_image_message).
-        image_message = self._build_image_message(current_frame)
+        before_frame, after_frame, executed_actions = self._step_boundary_frames(
+            current_frame,
+            history_entries,
+            self._last_step_summary,
+        )
         initial_messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt},
             *self._history_messages,
-            self._build_user_message(user_prompt),
+            self._build_user_message(
+                user_prompt,
+                before_frame=before_frame,
+                after_frame=after_frame,
+                executed_actions=executed_actions,
+            ),
         ]
-        if image_message is not None:
-            initial_messages.append(image_message)
         messages: list[dict[str, Any]] = self._trim_messages_for_context(
             initial_messages,
             tools=self._tools(state_path),
@@ -2045,15 +2126,6 @@ class ToolAgent:
                     )
                     messages = trimmed_messages
                     continue
-                if image_message is not None:
-                    # The image only accompanies the first request of the
-                    # turn. Removing the trailing message (rather than
-                    # rewriting it into a placeholder later) leaves every
-                    # persisted message byte-identical to what was sent, so
-                    # the server's prefix cache stays warm across turns; the
-                    # board remains available as ASCII via the python tool.
-                    messages = [m for m in messages if m is not image_message]
-                    image_message = None
                 raw_reasoning = _extract_reasoning_text(result.message)
                 raw_content = _normalize_message_content(result.message.get("content", ""))
                 tool_calls = json.loads(json.dumps(result.message.get("tool_calls") or []))
