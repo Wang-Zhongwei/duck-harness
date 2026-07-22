@@ -297,7 +297,7 @@ install-local-sources:
 		exit 1; \
 	fi
 	@if [ -d "$(REPO_ROOT)/../tufa-arc-agi-framework" ]; then \
-		if ! $(UV) pip install --offline --python "$(REPO_ROOT)/.venv/bin/python" \
+		if ! $(UV) pip install --offline --no-build-isolation --python "$(REPO_ROOT)/.venv/bin/python" \
 			--no-deps \
 			-e "$(REPO_ROOT)/../tufa-arc-agi-framework"; then \
 			echo "Offline editable install failed; retrying against the package index."; \
