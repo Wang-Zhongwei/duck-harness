@@ -1248,7 +1248,7 @@ class ToolAgent:
         ]
         lines = [f"- {label}: {value}" for label, value in entries if value]
         if not lines:
-            return []
+            return [""]
         return [
             *lines,
             "- Revise any item above immediately if `current_frame` or `history` contradicts it.",
