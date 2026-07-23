@@ -33,7 +33,7 @@
       "partition": "gpuqs,condo",
       "nodelist": "",
       "start_local_server": true,
-      "extra_sbatch_flags": ["--account=default", "--qos=normal"]
+      "extra_sbatch_flags": ["--account=default", "--qos=normal", "--exclusive"]
     }
   },
   "server" : {
