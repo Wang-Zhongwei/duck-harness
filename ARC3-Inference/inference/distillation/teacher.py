@@ -53,6 +53,18 @@ def _extract_prompt_logprobs(
     ]
 
 
+class TeacherAlignmentError(ValueError):
+    """The teacher's chat rendering did not reproduce the student's tokens.
+
+    The captured tool call is structured (name + parsed arguments), so
+    rebuilding the assistant turn as text is lossy: the tool-call parser drops a
+    trailing newline inside a parameter value, and the rebuilt text then differs
+    from what the student actually emitted by exactly that newline. Scoring such
+    a turn would line teacher logprobs up against the wrong tokens, so callers
+    skip the record instead.
+    """
+
+
 def _teacher_messages(row: dict[str, Any]) -> list[dict[str, Any]]:
     messages = []
     for message in [*row["messages"], row["assistant_message"]]:
@@ -209,7 +221,7 @@ class VllmTeacherScorer:
         prompt_ids = [int(value) for value in payload.get("prompt_token_ids") or []]
         start = _last_subsequence_start(prompt_ids, output_ids)
         if start is None:
-            raise ValueError(
+            raise TeacherAlignmentError(
                 "teacher chat rendering did not preserve the student's exact output token IDs"
             )
         prompt_logprobs = _extract_prompt_logprobs(payload, prompt_ids)

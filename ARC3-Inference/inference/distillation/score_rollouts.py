@@ -9,7 +9,7 @@ import shutil
 import sys
 import time
 
-from inference.distillation.teacher import VllmTeacherScorer
+from inference.distillation.teacher import TeacherAlignmentError, VllmTeacherScorer
 
 POLL_SECONDS = 10.0
 
@@ -18,26 +18,42 @@ def _game_id(path: Path) -> str:
     return path.name.split("_", 1)[0]
 
 
+def _score_one(
+    scorer: VllmTeacherScorer, row: dict
+) -> list[float] | TeacherAlignmentError:
+    try:
+        return scorer.score_game_turn(row)
+    except TeacherAlignmentError as error:
+        return error
+
+
 def _score_lines(
     lines: list[str], scorer: VllmTeacherScorer, workers: int
-) -> list[str]:
+) -> tuple[list[str], int]:
     """Score complete JSONL records, preserving input order.
 
     Order matters: load_game_episodes() accumulates rows in file order and
     computes discounted returns backwards over that sequence, so a reordered
     file silently corrupts the advantages.
+
+    Records the teacher cannot align are dropped rather than written with
+    mis-indexed logprobs; the caller reports how many.
     """
     rows = [json.loads(line) for line in lines]
     if workers > 1 and len(rows) > 1:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            scored = list(pool.map(scorer.score_game_turn, rows))
+            scored = list(pool.map(lambda row: _score_one(scorer, row), rows))
     else:
-        scored = [scorer.score_game_turn(row) for row in rows]
+        scored = [_score_one(scorer, row) for row in rows]
     out: list[str] = []
+    skipped = 0
     for row, logprobs in zip(rows, scored, strict=True):
+        if isinstance(logprobs, TeacherAlignmentError):
+            skipped += 1
+            continue
         row["teacher_logprobs"] = logprobs
         out.append(json.dumps(row, ensure_ascii=True) + "\n")
-    return out
+    return out, skipped
 
 
 def _consume(source: Path, offset: int) -> tuple[list[str], int]:
@@ -76,6 +92,7 @@ def score_directory(
     output_dir.mkdir(parents=True, exist_ok=True)
     offsets: dict[Path, int] = {}
     totals: dict[str, int] = {}
+    skipped_total = 0
 
     while True:
         collect_finished = done_marker is None or done_marker.exists()
@@ -88,12 +105,15 @@ def score_directory(
                 continue
             offsets[source] = new_offset
             progressed = True
+            scored, skipped = _score_lines(lines, scorer, workers)
+            skipped_total += skipped
             with (output_dir / source.name).open("a", encoding="utf-8") as writer:
-                writer.writelines(_score_lines(lines, scorer, workers))
-            totals[source.name] = totals.get(source.name, 0) + len(lines)
+                writer.writelines(scored)
+            totals[source.name] = totals.get(source.name, 0) + len(scored)
+            note = f", {skipped} unalignable" if skipped else ""
             print(
-                f"scored {len(lines)} records from {source.name} "
-                f"(total {totals[source.name]})",
+                f"scored {len(scored)} records from {source.name} "
+                f"(total {totals[source.name]}{note})",
                 flush=True,
             )
         if done_marker is None:
@@ -109,8 +129,15 @@ def score_directory(
     if not totals:
         print("no rollout records scored", file=sys.stderr)
         raise SystemExit(1)
+    total = sum(totals.values())
     print(
-        f"scored {sum(totals.values())} records across {len(totals)} episodes",
+        f"scored {total} records across {len(totals)} episodes"
+        + (
+            f"; skipped {skipped_total} unalignable "
+            f"({skipped_total / (total + skipped_total):.1%})"
+            if skipped_total
+            else ""
+        ),
         flush=True,
     )
 
