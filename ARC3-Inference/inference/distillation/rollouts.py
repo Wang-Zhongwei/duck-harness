@@ -35,6 +35,11 @@ def load_game_episodes(path: str | Path, *, gamma: float = 1.0) -> list[list[Gam
                 if not line.strip():
                     continue
                 row = json.loads(line)
+                # A turn cut off at the token cap emitted no tool call and took
+                # no game action; imitating it teaches the student to stop
+                # mid-thought.
+                if row.get("finish_reason") == "length":
+                    continue
                 grouped.setdefault(str(row["episode_id"]), []).append(row)
                 policy_ids.add(str(row["policy_id"]))
     if not grouped:
