@@ -1,0 +1,3 @@
+- reverse KL on student rollouts (mode-seeeking rather than mode-covering)
+- but openrouter only provides logprobs that teachers generate
+- teacher candidates:  Qwen/Qwen3.5-397B-A17B-GPTQ-Int4

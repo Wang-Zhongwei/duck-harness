@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "Train/eval split of the 25 official games for on-policy distillation.",
+    "Difficulty = mean score over 10 passes in runs/20260723_084737_asrun-kv-25games",
+    "(overall mean 1.73). Games are rank-ordered by that score and every 5th is",
+    "held out, starting at rank 2, so the eval set is a stratified miniature of the",
+    "full distribution instead of a difficulty-biased slice. Rank 1 (ft09, 11.49,",
+    "solved 6/10) stays in train on purpose: it is the highest-variance game and",
+    "would dominate a 5-game held-out mean.",
+    "Eval set spans two reliably-solved games (regression detection), one coin-flip",
+    "game, and two the base model has never solved (headroom)."
+  ],
+  "eval": [
+    "vc33-5430563c",
+    "re86-8af5384d",
+    "s5i5-18d95033",
+    "cd82-fb555c5d",
+    "g50t-5849a774"
+  ],
+  "eval_reference_scores": {
+    "vc33-5430563c": 5.54,
+    "re86-8af5384d": 2.39,
+    "s5i5-18d95033": 1.31,
+    "cd82-fb555c5d": 0.37,
+    "g50t-5849a774": 0.0,
+    "_mean": 1.92
+  },
+  "train": [
+    "ft09-0d8bbf25",
+    "tn36-ef4dde99",
+    "ar25-0c556536",
+    "lp85-305b61c3",
+    "sb26-7fbdac44",
+    "su15-1944f8ab",
+    "r11l-495a7899",
+    "sp80-589a99af",
+    "tu93-0768757b",
+    "lf52-271a04aa",
+    "ka59-38d34dbb",
+    "sc25-635fd71a",
+    "m0r0-492f87ba",
+    "bp35-0a0ad940",
+    "dc22-fdcac232",
+    "sk48-d8078629",
+    "cn04-2fe56bfb",
+    "ls20-9607627b",
+    "tr87-cd924810",
+    "wa30-ee6fef47"
+  ],
+  "train_reference_mean": 1.68
+}

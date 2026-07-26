@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := interactive
 
-.PHONY: install install-server install-local-sources prepare-ci serve serve-submit serve-hold sbatch-submit server stop-server check-server check-remote-server server-host server-tunnel-command interactive sbatch kaggle-duck run _taaf-run chat eval score_run significance view trace traces zip clean cluster_view_queue
+.PHONY: install install-server install-local-sources prepare-ci serve serve-submit serve-hold sbatch-submit server stop-server check-server check-remote-server server-host server-tunnel-command interactive sbatch kaggle-duck run _taaf-run chat eval score_run significance view trace traces zip clean cluster_view_queue distill-submit distill-rollout distill-split distill-score distill-train _distill-submit-stage
 
 -include .env
 
@@ -142,6 +142,7 @@ SERVER_ENABLE_PREFIX_CACHING ?= $(shell $(CONFIG_VALUE) server.enable_prefix_cac
 SERVER_DEFAULT_CHAT_TEMPLATE_KWARGS ?= $(shell $(CONFIG_VALUE) server.default_chat_template_kwargs)
 SERVER_TOOL_CALL_PARSER ?= $(shell $(CONFIG_VALUE) server.tool_call_parser qwen3_coder)
 SERVER_REASONING_PARSER ?= $(shell $(CONFIG_VALUE) server.reasoning_parser)
+SERVER_LOGPROBS_MODE ?= $(shell $(CONFIG_VALUE) server.logprobs_mode raw_logprobs)
 SERVER_ATTENTION_BACKEND ?= $(shell $(CONFIG_VALUE) server.attention_backend)
 SERVER_ENABLE_LORA ?= false
 SERVER_MAX_LORAS ?= 1
@@ -197,6 +198,18 @@ DEPLOYMENT_SLURM_LOCAL_SERVER_CONFIG ?= $(CONFIG_PATH)
 
 MULTIMODAL_CONTEXT ?= $(shell $(CONFIG_VALUE) multimodal.context)
 MULTIMODAL_UPSCALE ?= $(shell $(CONFIG_VALUE) multimodal.upscale 16)
+DISTILL_ROLLOUT_DIR ?=
+DISTILL_POLICY_ID ?=
+# Empty = all official games; configs/distill.games.json splits train vs held out.
+DISTILL_GAME ?=
+DISTILL_PASSES ?= 1
+DISTILL_ITERATION ?= 0
+DISTILL_ITERATIONS ?= 1
+DISTILL_CONCURRENCY ?= 16
+DISTILL_SCORE_WORKERS ?= 8
+DISTILL_GAMES_FILE ?=
+DISTILL_DEPENDENCY ?=
+DISTILL_SUBMIT_HOST ?= coe-hpc3
 
 CHAT_BASE_URL ?= $(shell $(CONFIG_VALUE) chat.base_url $(LOCAL_ANALYZER_BASE_URL))
 CHAT_PROVIDER ?= $(shell $(CONFIG_VALUE) chat.provider $(LOCAL_ANALYZER_PROVIDER))
@@ -248,6 +261,14 @@ export LOCAL_ANALYZER_SITE_URL
 export LOCAL_ANALYZER_APP_NAME
 export MULTIMODAL_CONTEXT
 export MULTIMODAL_UPSCALE
+export DISTILL_ROLLOUT_DIR
+export DISTILL_POLICY_ID
+export SERVER_ENABLE_LORA
+export SERVER_MAX_LORAS
+export SERVER_MAX_LORA_RANK
+export SERVER_LORA_DTYPE
+export SERVER_LORA_ALIAS
+export SERVER_LORA_PATH
 export CHAT_PROVIDER
 export OPENROUTER_API_KEY
 export OPENAI_API_KEY
@@ -474,6 +495,7 @@ server:
 				--enable-auto-tool-choice \
 				--tool-call-parser "$(SERVER_TOOL_CALL_PARSER)" \
 				$(if $(SERVER_REASONING_PARSER),--reasoning-parser "$(SERVER_REASONING_PARSER)") \
+				--logprobs-mode "$(SERVER_LOGPROBS_MODE)" \
 				--limit-mm-per-prompt '{"image": $(SERVER_MAX_IMAGES), "video": $(SERVER_MAX_VIDEOS)}' \
 				>"$(SERVER_LOG)" 2>&1 & echo $$! >"$(SERVER_PID)"; \
 		elif [ "$(SERVER_RUNTIME)" = "venv" ]; then \
@@ -502,6 +524,7 @@ server:
 				--enable-auto-tool-choice \
 				--tool-call-parser "$(SERVER_TOOL_CALL_PARSER)" \
 				$(if $(SERVER_REASONING_PARSER),--reasoning-parser "$(SERVER_REASONING_PARSER)") \
+				--logprobs-mode "$(SERVER_LOGPROBS_MODE)" \
 			>"$(SERVER_LOG)" 2>&1 & echo $$! >"$(SERVER_PID)"; \
 		else \
 			echo "Unsupported SERVER_RUNTIME='$(SERVER_RUNTIME)'. Use 'apptainer' or 'venv'." >&2; \
@@ -767,3 +790,33 @@ cluster_view_queue:
 
 clean:
 	rm -rf runs/* runs/.[!.]* runs/..?*
+
+DISTILL_ENV = \
+		DISTILL_GAME="$(DISTILL_GAME)" \
+		DISTILL_PASSES="$(DISTILL_PASSES)" \
+		DISTILL_ITERATION="$(DISTILL_ITERATION)" \
+		DISTILL_ITERATIONS="$(DISTILL_ITERATIONS)" \
+		DISTILL_CONCURRENCY="$(DISTILL_CONCURRENCY)" \
+		DISTILL_SCORE_WORKERS="$(DISTILL_SCORE_WORKERS)" \
+		DISTILL_GAMES_FILE="$(DISTILL_GAMES_FILE)"
+
+distill-submit:
+	@ssh "$(DISTILL_SUBMIT_HOST)" 'cd "$(REPO_ROOT)" && $(DISTILL_ENV) \
+		bash distillation/submit_pipeline.sh all'
+
+distill-rollout: DISTILL_STAGE = rollout
+distill-rollout: _distill-submit-stage
+
+distill-score: DISTILL_STAGE = score
+distill-score: _distill-submit-stage
+
+distill-train: DISTILL_STAGE = train
+distill-train: _distill-submit-stage
+
+distill-split:
+	@$(PYTHON) -m inference.distillation.split_report $(if $(RUN),--run "$(RUN)",)
+
+_distill-submit-stage:
+	@ssh "$(DISTILL_SUBMIT_HOST)" 'cd "$(REPO_ROOT)" && $(DISTILL_ENV) \
+		DISTILL_DEPENDENCY="$(DISTILL_DEPENDENCY)" \
+		bash distillation/submit_pipeline.sh "$(DISTILL_STAGE)"'

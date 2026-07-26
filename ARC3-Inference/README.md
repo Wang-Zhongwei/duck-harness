@@ -47,6 +47,13 @@ Open the viewer:
 make view
 ```
 
+## On-policy distillation
+
+The teacher-scored Qwen3.6 LoRA pipeline lives in
+[`distillation/README.md`](distillation/README.md). It samples from the current
+student and minimizes reverse KL against a separately served
+`Qwen/Qwen3.5-397B-A17B-GPTQ-Int4` teacher.
+
 If your runs are under the checked-in default experiment root, point the viewer
 there:
 
