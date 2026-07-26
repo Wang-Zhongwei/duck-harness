@@ -1,0 +1,29 @@
+{
+  "inference_config": "configs/inference.json",
+  "teacher": {
+    "model": "Qwen/Qwen3.5-397B-A17B-GPTQ-Int4",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "api_key_env": "TEACHER_API_KEY"
+  },
+  "student": {
+    "model": "vrfai/Qwen3.6-27B-FP8",
+    "attn_implementation": "sdpa",
+    "lora": {
+      "rank": 32,
+      "alpha": 64,
+      "target_modules": [
+        "q_proj", "k_proj", "v_proj", "o_proj",
+        "gate_proj", "up_proj", "down_proj"
+      ]
+    }
+  },
+  "training": {
+    "rollouts": "distillation/rollouts/scored/iteration-0000",
+    "output_dir": "artifacts/qwen36-27b-fp8-rkl-lora/iteration-0001",
+    "learning_rate": 0.00001,
+    "betas": [0.9, 0.95],
+    "weight_decay": 0.0,
+    "gamma": 1.0,
+    "max_grad_norm": 1.0
+  }
+}
