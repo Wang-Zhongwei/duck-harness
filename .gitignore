@@ -7,7 +7,8 @@ __pycache__/
 .pytest_cache/
 
 # Runtime caches (created by `make`/`make view`)
-.cache/
+ARC3-Inference/distillation/jobs/
+ARC3-Inference/distillation/rollouts/
 
 # Node (figure tooling, if reintroduced)
 node_modules/
@@ -26,3 +27,10 @@ logs/
 
 # Local ARC3 run outputs
 ARC3-Inference/runs/
+ARC3-Inference/artifacts/
+
+# Model weight / container caches (hundreds of GB)
+ARC3-Inference/.cache/
+
+# Claude Code worktrees
+.claude/worktrees/
