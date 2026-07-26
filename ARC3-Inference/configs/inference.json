@@ -52,6 +52,7 @@
     "max_images": 4,
     "tool_call_parser": "qwen3_coder",
     "reasoning_parser": "qwen3",
+    "logprobs_mode": "processed_logprobs",
     "default_chat_template_kwargs": {
       "preserve_thinking": true
     }

@@ -163,6 +163,8 @@ _LOCAL_ANALYZER_SEED = _get_env_int("LOCAL_ANALYZER_SEED", -1)
 _LOCAL_ANALYZER_MODEL_UPDATE_MODE = os.environ.get(
     "LOCAL_ANALYZER_MODEL_UPDATE_MODE", "assistant"
 ).strip().lower()
+_DISTILL_ROLLOUT_DIR = os.environ.get("DISTILL_ROLLOUT_DIR", "").strip()
+_DISTILL_POLICY_ID = os.environ.get("DISTILL_POLICY_ID", "").strip()
 _REQUEST_SAFETY_MARGIN_TOKENS = 512
 _CONTEXT_OVERFLOW_RETRY_TRIM_TOKENS = 512
 _PERSISTENT_HISTORY_ASSISTANT_TURNS = 30
@@ -913,6 +915,49 @@ def _append_request_snapshot(
         f.write("\n")
 
 
+def _append_distill_rollout(
+    state_path: Path,
+    *,
+    policy_id: str,
+    model_id: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    tool_choice: str | None,
+    result: "_ChatCompletionResult",
+    analysis_step: int | None,
+    action: int,
+    request_index_within_turn: int,
+) -> None:
+    rollout_dir = Path(_DISTILL_ROLLOUT_DIR).expanduser()
+    rollout_dir.mkdir(parents=True, exist_ok=True)
+    path = rollout_dir / f"{state_path.stem}.jsonl"
+    payload = {
+        "schema_version": 1,
+        "episode_id": state_path.stem,
+        "policy_id": policy_id,
+        "model": model_id,
+        "analysis_step": analysis_step,
+        "action": action,
+        "request_index_within_turn": request_index_within_turn,
+        "messages": messages,
+        "tools": tools or [],
+        "tool_choice": tool_choice,
+        "assistant_message": result.message,
+        "finish_reason": result.finish_reason,
+        "prompt_token_ids": result.prompt_token_ids,
+        "output_token_ids": result.output_token_ids,
+        "output_logprobs": result.logprobs,
+        "usage": result.usage,
+    }
+    if not payload["prompt_token_ids"] or not payload["output_token_ids"]:
+        raise RuntimeError(
+            "distillation capture requires vLLM prompt_token_ids and output token_ids"
+        )
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=True))
+        handle.write("\n")
+
+
 def _write_prompt_log_snapshot(
     log_path: Path,
     *,
@@ -997,6 +1042,9 @@ class _ChatCompletionResult:
     message: dict[str, Any]
     finish_reason: str = ""
     usage: dict[str, Any] | None = None
+    prompt_token_ids: list[int] | None = None
+    output_token_ids: list[int] | None = None
+    logprobs: dict[str, Any] | None = None
 
 
 class ToolAgent:
@@ -1062,6 +1110,10 @@ class ToolAgent:
         self._last_step_summary: dict[str, Any] | None = None
         self._last_action_result: dict[str, Any] | None = None
         self._summarized_knowledge = _empty_world_model()
+        if _DISTILL_ROLLOUT_DIR and not _DISTILL_POLICY_ID:
+            raise ValueError(
+                "DISTILL_POLICY_ID is required when DISTILL_ROLLOUT_DIR is set"
+            )
 
     def _headers(self) -> dict[str, str]:
         api_key = (
@@ -1531,6 +1583,15 @@ class ToolAgent:
             tool_choice=_request_tool_choice(tools),
             seed=_LOCAL_ANALYZER_SEED,
         )
+        if _DISTILL_ROLLOUT_DIR:
+            payload.update(
+                {
+                    "logprobs": True,
+                    "top_logprobs": 0,
+                    "return_token_ids": True,
+                }
+            )
+
         def post_chat(request_payload: dict[str, Any]) -> requests.Response:
             return requests.post(
                 f"{self._model.base_url.rstrip('/')}/chat/completions",
@@ -1563,6 +1624,9 @@ class ToolAgent:
             message=choice.get("message", {}),
             finish_reason=str(choice.get("finish_reason", "") or ""),
             usage=payload.get("usage"),
+            prompt_token_ids=payload.get("prompt_token_ids"),
+            output_token_ids=choice.get("token_ids"),
+            logprobs=choice.get("logprobs"),
         )
 
     def _trim_tool_text(self, text: str) -> tuple[str, bool]:
@@ -2195,6 +2259,19 @@ class ToolAgent:
                         )
                     result = self._chat_completion(messages, **request_kwargs)
                     self._accumulate_usage_tokens(result.usage)
+                    if _DISTILL_ROLLOUT_DIR:
+                        _append_distill_rollout(
+                            state_path,
+                            policy_id=_DISTILL_POLICY_ID,
+                            model_id=self._model.model_id,
+                            messages=latest_request_messages,
+                            tools=latest_request_tools,
+                            tool_choice=latest_request_tool_choice,
+                            result=result,
+                            analysis_step=analysis_step,
+                            action=display_action_num,
+                            request_index_within_turn=latest_request_index,
+                        )
                     if self._save_request_logs:
                         _append_request_snapshot(
                             _resolve_request_log_path(state_path),
