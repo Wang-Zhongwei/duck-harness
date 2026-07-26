@@ -53,7 +53,21 @@ def _extract_prompt_logprobs(
     ]
 
 
-class TeacherAlignmentError(ValueError):
+class TeacherSkipError(ValueError):
+    """This one record cannot be scored; the rest of the run is unaffected."""
+
+
+class TeacherContextOverflowError(TeacherSkipError):
+    """Prompt plus student output is longer than the teacher's context window.
+
+    The student generates with prompt + output <= its own max_model_len, but
+    scoring re-renders both as a single prompt and adds the assistant header,
+    so a turn that filled the student's window overflows by a few tokens. Serve
+    the teacher with a larger --max-model-len; this covers the remainder.
+    """
+
+
+class TeacherAlignmentError(TeacherSkipError):
     """The teacher's chat rendering did not reproduce the student's tokens.
 
     The captured tool call is structured (name + parsed arguments), so
@@ -213,9 +227,11 @@ class VllmTeacherScorer:
             timeout=self.timeout_seconds,
         )
         if not response.ok:
+            detail = response.text[:2000]
+            if response.status_code == 400 and "maximum context length" in detail:
+                raise TeacherContextOverflowError(detail)
             raise RuntimeError(
-                f"teacher request failed ({response.status_code}): "
-                f"{response.text[:2000]}"
+                f"teacher request failed ({response.status_code}): {detail}"
             )
         payload = response.json()
         prompt_ids = [int(value) for value in payload.get("prompt_token_ids") or []]

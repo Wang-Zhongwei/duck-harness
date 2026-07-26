@@ -83,6 +83,9 @@ submit_score() {
   exports+=",DISTILL_SCORED_DIR=$(scored_dir_for "$iteration")"
   exports+=",DISTILL_GAMES_FILE=$games_file,DISTILL_WATCH=1"
   exports+=",DISTILL_SCORE_WORKERS=${DISTILL_SCORE_WORKERS:-8}"
+  # Scoring re-renders the student's prompt AND its output as one prompt, so a
+  # turn that filled the student's 32768 window overflows it by a few tokens.
+  exports+=",TEACHER_MAX_MODEL_LEN=${TEACHER_MAX_MODEL_LEN:-40960}"
   exports+=",TEACHER_TP=4,TEACHER_MAX_NUM_SEQS=${TEACHER_MAX_NUM_SEQS:-8}"
   exports+=",TEACHER_GPU_MEMORY_UTILIZATION=0.84"
   exports+=",TEACHER_CPU_OFFLOAD_GB=${TEACHER_CPU_OFFLOAD_GB:-24}"

@@ -9,21 +9,20 @@ import shutil
 import sys
 import time
 
-from inference.distillation.teacher import TeacherAlignmentError, VllmTeacherScorer
+from inference.distillation.teacher import TeacherSkipError, VllmTeacherScorer
 
 POLL_SECONDS = 10.0
+OFFSETS_FILENAME = ".scoring_offsets.json"
 
 
 def _game_id(path: Path) -> str:
     return path.name.split("_", 1)[0]
 
 
-def _score_one(
-    scorer: VllmTeacherScorer, row: dict
-) -> list[float] | TeacherAlignmentError:
+def _score_one(scorer: VllmTeacherScorer, row: dict) -> list[float] | TeacherSkipError:
     try:
         return scorer.score_game_turn(row)
-    except TeacherAlignmentError as error:
+    except TeacherSkipError as error:
         return error
 
 
@@ -48,7 +47,7 @@ def _score_lines(
     out: list[str] = []
     skipped = 0
     for row, logprobs in zip(rows, scored, strict=True):
-        if isinstance(logprobs, TeacherAlignmentError):
+        if isinstance(logprobs, TeacherSkipError):
             skipped += 1
             continue
         row["teacher_logprobs"] = logprobs
@@ -90,7 +89,16 @@ def score_directory(
     waiting a full collect wallclock for it.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    offsets: dict[Path, int] = {}
+    # Consumed byte offsets are persisted so a restarted job resumes instead of
+    # re-scoring finished episodes and appending them a second time.
+    offsets_path = output_dir / OFFSETS_FILENAME
+    offsets: dict[str, int] = (
+        json.loads(offsets_path.read_text(encoding="utf-8"))
+        if offsets_path.exists()
+        else {}
+    )
+    if offsets:
+        print(f"resuming: {len(offsets)} episode(s) already consumed", flush=True)
     totals: dict[str, int] = {}
     skipped_total = 0
 
@@ -100,17 +108,19 @@ def score_directory(
         for source in sorted(input_dir.glob("*.jsonl")):
             if games is not None and _game_id(source) not in games:
                 continue
-            lines, new_offset = _consume(source, offsets.get(source, 0))
+            lines, new_offset = _consume(source, offsets.get(source.name, 0))
             if not lines:
                 continue
-            offsets[source] = new_offset
             progressed = True
             scored, skipped = _score_lines(lines, scorer, workers)
             skipped_total += skipped
             with (output_dir / source.name).open("a", encoding="utf-8") as writer:
                 writer.writelines(scored)
+            # Record the offset only once its records are durably written.
+            offsets[source.name] = new_offset
+            offsets_path.write_text(json.dumps(offsets, indent=2), encoding="utf-8")
             totals[source.name] = totals.get(source.name, 0) + len(scored)
-            note = f", {skipped} unalignable" if skipped else ""
+            note = f", {skipped} unscorable" if skipped else ""
             print(
                 f"scored {len(scored)} records from {source.name} "
                 f"(total {totals[source.name]}{note})",
@@ -133,7 +143,7 @@ def score_directory(
     print(
         f"scored {total} records across {len(totals)} episodes"
         + (
-            f"; skipped {skipped_total} unalignable "
+            f"; skipped {skipped_total} unscorable "
             f"({skipped_total / (total + skipped_total):.1%})"
             if skipped_total
             else ""

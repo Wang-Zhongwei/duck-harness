@@ -16,8 +16,10 @@ elif ! find "$DISTILL_RAW_DIR" -maxdepth 1 -name '*.jsonl' -print -quit | grep -
   echo "No captured rollouts found in $DISTILL_RAW_DIR" >&2
   exit 1
 fi
-if [[ -e "$DISTILL_SCORED_DIR" ]]; then
-  echo "Scored output already exists: $DISTILL_SCORED_DIR" >&2
+# A scored directory carrying resume offsets is a restart, not a collision:
+# the scorer picks up where it stopped. Without them it would append duplicates.
+if [[ -e "$DISTILL_SCORED_DIR" && ! -f "$DISTILL_SCORED_DIR/.scoring_offsets.json" ]]; then
+  echo "Scored output already exists without resume offsets: $DISTILL_SCORED_DIR" >&2
   exit 1
 fi
 
