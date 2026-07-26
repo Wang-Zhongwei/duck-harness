@@ -17,7 +17,7 @@ exec vllm serve Qwen/Qwen3.5-397B-A17B-GPTQ-Int4 \
   --host "${TEACHER_HOST:-0.0.0.0}" \
   --port "${TEACHER_PORT:-8000}" \
   --tensor-parallel-size "${TEACHER_TP:-4}" \
-  --max-model-len "${TEACHER_MAX_MODEL_LEN:-32768}" \
+  --max-model-len "${TEACHER_MAX_MODEL_LEN:-131072}" \
   --max-num-seqs "${TEACHER_MAX_NUM_SEQS:-16}" \
   --gpu-memory-utilization "${TEACHER_GPU_MEMORY_UTILIZATION:-0.92}" \
   --max-logprobs 1 \
