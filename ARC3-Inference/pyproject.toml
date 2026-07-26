@@ -35,6 +35,15 @@ server = [
     "ninja==1.13.0",
     "vllm @ https://wheels.vllm.ai/8fbe3f303fbf995afe4c409309aa8e889235339e/vllm-0.17.2rc1.dev150%2Bg8fbe3f303-cp38-abi3-manylinux_2_31_x86_64.whl",
 ]
+# On-policy distillation training deps (was distillation/.venv). Do not sync
+# together with `server`: vllm pins its own torch and the two resolutions clash.
+distill = [
+    "accelerate==1.12.0",
+    "peft==0.18.0",
+    "torch==2.10.0",
+    "torchvision==0.25.0",
+    "transformers==5.6.2",
+]
 
 [project.scripts]
 inference-taaf-run = "inference.framework.run:main"
@@ -55,5 +64,17 @@ testpaths = ["tests"]
 # TEMP: use the local editable tufa-arc-agi-framework checkout (branch submission-share-mode /
 # PR #29, for make_share_version) instead of git@main. Revert this table + the dependency line
 # above before committing.
+[tool.uv]
+# vllm pins transformers<5 while the training code needs transformers 5.x, so
+# these two extras can never be installed into the same environment.
+conflicts = [[{ extra = "server" }, { extra = "distill" }]]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
 [tool.uv.sources]
 tufa-arc-agi-framework = { path = "../tufa-arc-agi-framework", editable = true }
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
