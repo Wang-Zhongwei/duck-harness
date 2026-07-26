@@ -38,15 +38,23 @@ class _CpuGradientAccumulator:
 
         return capture
 
-    def restore(self) -> None:
-        for handle in self._handles:
-            handle.remove()
+    def flush(self) -> None:
+        """Move accumulated gradients back onto the parameters, then forget them.
+
+        Hooks stay live, so the next minibatch accumulates from empty.
+        """
         for name, parameter in self._parameters:
-            gradient = self._gradients.get(name)
+            gradient = self._gradients.pop(name, None)
             if gradient is not None:
                 parameter.grad = gradient.to(
                     device=parameter.device, dtype=parameter.dtype
                 )
+
+    def restore(self) -> None:
+        for handle in self._handles:
+            handle.remove()
+        self._handles = []
+        self.flush()
 
 
 def _load_json(path: str | Path) -> dict[str, Any]:
@@ -272,9 +280,24 @@ def train(config: dict[str, Any]) -> None:
 
     episode_count = len(episodes)
     turn_count = sum(map(len, episodes))
+    # A single step over the whole batch barely moves a LoRA, so step every
+    # minibatch_turns turns instead; 0 restores the one-step-per-batch behavior.
+    minibatch_turns = int(training.get("minibatch_turns", 8)) or turn_count
+    max_grad_norm = float(training.get("max_grad_norm", 1.0))
     completed_turns = 0
+    pending_turns = 0
+    optimizer_updates = 0
     sampled_cost = 0.0
     sampled_tokens = 0
+
+    def apply_update() -> None:
+        nonlocal pending_turns, optimizer_updates
+        gradient_accumulator.flush()
+        accelerator.clip_grad_norm_(model.parameters(), max_grad_norm)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        pending_turns = 0
+        optimizer_updates += 1
     for episode in episodes:
         for turn in episode:
             inputs = _turn_inputs(processor, turn, accelerator.device)
@@ -302,8 +325,9 @@ def train(config: dict[str, Any]) -> None:
                 dtype=new_logprobs.dtype,
                 device=new_logprobs.device,
             )
-            loss = -(new_logprobs * advantages.detach()).sum() / episode_count
+            loss = -(new_logprobs * advantages.detach()).sum() / minibatch_turns
             accelerator.backward(loss)
+            pending_turns += 1
             sampled_cost += sum(
                 p - q
                 for p, q in zip(
@@ -312,6 +336,8 @@ def train(config: dict[str, Any]) -> None:
             )
             sampled_tokens += output_width
             completed_turns += 1
+            if pending_turns >= minibatch_turns:
+                apply_update()
             if accelerator.is_main_process:
                 print(
                     json.dumps(
@@ -326,12 +352,9 @@ def train(config: dict[str, Any]) -> None:
                     flush=True,
                 )
 
+    if pending_turns:
+        apply_update()
     gradient_accumulator.restore()
-    accelerator.clip_grad_norm_(
-        model.parameters(), float(training.get("max_grad_norm", 1.0))
-    )
-    optimizer.step()
-    optimizer.zero_grad(set_to_none=True)
     output_dir = Path(training["output_dir"])
     unwrapped = accelerator.unwrap_model(model)
     unwrapped.save_pretrained(
@@ -350,7 +373,8 @@ def train(config: dict[str, Any]) -> None:
                     "reverse_kl_sample": sampled_cost / episode_count,
                     "reverse_kl_per_token": sampled_cost / max(1, sampled_tokens),
                     "fp8_modules": len(fp8_modules),
-                    "optimizer_updates": 1,
+                    "minibatch_turns": minibatch_turns,
+                    "optimizer_updates": optimizer_updates,
                     "output_dir": str(output_dir),
                 },
                 sort_keys=True,
