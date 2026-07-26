@@ -4,7 +4,9 @@ set -euo pipefail
 ROOT="${DISTILL_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$ROOT"
 
-: "${DISTILL_GAME:?DISTILL_GAME is required}"
+# DISTILL_GAME may be empty on purpose: that means "every official game", and
+# configs/distill.games.json decides which of them are trained on.
+: "${DISTILL_GAME?DISTILL_GAME must be set (empty means all official games)}"
 : "${DISTILL_PASSES:?DISTILL_PASSES is required}"
 : "${DISTILL_RESULT_DIR:?DISTILL_RESULT_DIR is required}"
 
