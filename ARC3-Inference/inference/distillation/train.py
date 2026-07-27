@@ -260,7 +260,9 @@ def train(config: dict[str, Any]) -> None:
     model.train()
 
     episodes = load_game_episodes(
-        training["rollouts"], gamma=float(training.get("gamma", 1.0))
+        training["rollouts"],
+        gamma=float(training.get("gamma", 1.0)),
+        max_sequence_tokens=int(training.get("max_sequence_tokens", 20480)),
     )
     optimizer = torch.optim.AdamW(
         (parameter for parameter in model.parameters() if parameter.requires_grad),
