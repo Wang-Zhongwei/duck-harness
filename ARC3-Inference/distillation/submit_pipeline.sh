@@ -111,7 +111,7 @@ submit_train() {
   sbatch --parsable \
     --job-name="distill-train-$tag" \
     --partition=gpuqs --qos=normal --account=default \
-    --gres=gpu:h100:1 --cpus-per-task=16 --mem=128G --time=08:00:00 \
+    --gres=gpu:h100:1 --cpus-per-task=16 --mem=128G --time=36:00:00 \
     --output="$log_dir/train-$tag-%j.out" \
     --error="$log_dir/train-$tag-%j.err" \
     ${dependency:+--dependency="afterok:$dependency"} \
