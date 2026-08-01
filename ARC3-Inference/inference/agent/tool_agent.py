@@ -13,7 +13,7 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 
-from inference.agent.action_names import to_engine_action, to_model_action
+from inference.agent.action_names import to_model_actions
 from inference.agent.prompts import (
     COMPACT_TOOL_SESSION_ADDENDUM,
     GAME_OVERVIEW_ADDENDUM,
@@ -165,13 +165,7 @@ _PYTHON_TOOL_DESCRIPTION = (
 )
 
 def _normalize_valid_actions(valid_actions: list[str] | None) -> list[str]:
-    names: list[str] = []
-    for value in valid_actions or []:
-        engine_name = to_engine_action(value)
-        name = to_model_action(engine_name or value)
-        if name and name not in names:
-            names.append(name)
-    return names
+    return to_model_actions(valid_actions or [])
 
 
 def _format_valid_action_line(valid_actions: list[str] | None) -> str:

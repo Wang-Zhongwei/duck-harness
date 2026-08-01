@@ -32,9 +32,15 @@ def to_engine_action(name: str | None) -> str | None:
 
 
 def to_model_actions(names: Iterable[str]) -> list[str]:
+    # Engine actions without a model-facing label (e.g. ACTION7/undo) are
+    # dropped rather than passed through raw: to_engine_action rejects them,
+    # so advertising them only invites "Unknown action" batch failures.
     resolved: list[str] = []
     for name in names:
-        label = to_model_action(name)
+        engine_name = to_engine_action(name)
+        if engine_name is None:
+            continue
+        label = to_model_action(engine_name)
         if label and label not in resolved:
             resolved.append(label)
     return resolved
