@@ -98,7 +98,27 @@ Design points:
   keeping both alternatives live under insufficient evidence must beat a
   lucky commitment (that's calibration — the transferable skill), while
   confirmed-rule predictions stay committed so permanent hedging doesn't
-  pay.
+  pay. Mechanics: one GRPO group = G sampled traces of the *same* context
+  (within-group variance is what GRPO differentiates); k > 1 so a rule must
+  be real, not a memorized frame; the model reasons freely before the
+  structured block, but reward attaches only to the block.
+- **Prediction contract — explicit, judge-free** (decision, 2026-08-02):
+  `ŝ` is an explicit machine-expandable delta — per-rule/object claims +
+  "everything else unchanged" — deterministically expanded to cells and
+  scored as exact-match bonus + precision/recall on the **changed-cell
+  set**. Never whole-board accuracy: "predict no change" scores ~97% of
+  ar25's cells while scoring 0 changed-set recall. Rules-as-code
+  (WorldCoder/EWM) is the ceiling — use it when the model can produce it;
+  the delta language is the floor; both are machine-checkable with dense
+  partial credit. Monolithic per-turn program synthesis is rejected:
+  all-or-nothing frame reproduction is sparse reward until near-perfect.
+  **LLM-as-judge never sits in the RL reward loop** — a judged reward is
+  hackable (GRPO optimizes the judge's soft spots; cf. the summed-KL EOS
+  collapse for what a gameable objective buys) and costs a model call per
+  sample vs ~µs for cell comparison. Its only place is offline SFT-label
+  curation. `B` is likewise explicit (schema-parsed; the planner and the
+  filters consume it) but never reward-judged directly — belief quality is
+  measured only through downstream prediction accuracy.
 - **W3 — refresh** during planner RL on the planner's fresh states, so the
   planner cannot camp on WM blind spots.
 
@@ -229,7 +249,8 @@ Revision — the WM prediction target is **rule-factored, not cell-level**:
   orb at (r,c) collected") + "background per rules";
 - verification stays cell-exact by *executing* the stated rules (EWM-style —
   the harness already runs a python tool in analysis; rules-as-code is the
-  natural form), falling back to a checker model for text-only rules.
+  natural form); text-only rules with no machine-expandable delta are
+  curation-time material, not RL-reward material (§3.1 prediction contract).
 
 This strengthens the meta-RL story: the trainable skill becomes "compress
 dynamics into rules that reproduce the frame", not "paint cells".
