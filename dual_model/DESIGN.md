@@ -42,10 +42,29 @@ Design points:
   lives compressed inside `B`. That bottleneck is what forces `B` to be a
   real memory.
 - `B` schema (interface contract, to be frozen before any training):
-  entities/objects; dynamics rules each with {statement, confidence,
-  evidence turns}; controls map (per-action effect); level-goal hypothesis;
-  open questions; active hypothesis + kill criteria. Format: structured
-  markdown or JSON — whatever the checker can parse.
+  entities/objects; dynamics rules each with {statement, status, evidence
+  turns}; controls map (per-action effect); level-goal hypothesis; open
+  questions; active hypothesis + kill criteria. Format: structured markdown
+  or JSON — whatever the checker can parse.
+- **Competing hypotheses are first-class** (design decision, 2026-08-02).
+  When evidence underdetermines a rule, `B` carries the live alternatives,
+  not a point estimate. A single committed belief is the measured failure
+  mode (ar25 timer-as-progress-bar never revisited; cd82's orbit mechanic
+  never even enumerated across 10 trials): when it breaks, the model must
+  invent an alternative mid-episode and rationalizes instead, and with one
+  hypothesis information gain is undefined — "explore" has no target. With
+  ≥2 live hypotheses the planner gets a computable objective: the
+  discriminating experiment — cheapest action whose predicted outcomes
+  *differ* across hypotheses (an action they agree on teaches nothing about
+  that split). Bounds that keep `B` compact:
+  1. scope alternatives to *open questions* (factored belief: confirmed core
+     + per-question branches, K ≤ 2–4) — never K parallel world models;
+  2. every rule carries status `confirmed(evidence turns)` /
+     `competing{H1,…}` / `ruled-out(turn, evidence)`; the ruled-out
+     graveyard prevents zombie hypotheses and re-proposal after level wipes;
+  3. value-of-information filter: spell out alternatives only when they'd
+     change a near-term decision, else log an open question;
+  4. collapse on resolution: winner → confirmed, losers → graveyard.
 - Two separate checkpoints (no interference, independently updatable);
   LoRA is fine for training but **merge before serving** (LoRA-on-GDN vLLM
   decode was 2.8 tok/s — the iter-0001 lesson).
@@ -73,7 +92,13 @@ Design points:
   logged/replayed transitions. STaR (keep-correct-traces SFT) first, then
   GRPO where one "episode" = one turn against ground truth. Replay
   verification runs at ~130 env-steps/s single-process (measured) — the
-  reward check is free relative to generation.
+  reward check is free relative to generation. Where `B` holds competing
+  hypotheses, score predictions as a **proper scoring rule over the
+  hypothesis set** (log-loss/Brier-style), not 0/1 on a single guess:
+  keeping both alternatives live under insufficient evidence must beat a
+  lucky commitment (that's calibration — the transferable skill), while
+  confirmed-rule predictions stay committed so permanent hedging doesn't
+  pay.
 - **W3 — refresh** during planner RL on the planner's fresh states, so the
   planner cannot camp on WM blind spots.
 
@@ -91,7 +116,11 @@ the failed rule → revise.
   stretches of logged episodes; (b) ChatGPT re-justifications constrained to
   "derivable from B_t alone"; (c) synthetic drills targeting measured
   pathologies — kill-the-dead-hypothesis, never repeat a no-op action,
-  test one variable at a time (the ar25 stuck-loop failures).
+  test one variable at a time (the ar25 stuck-loop failures), and
+  choose-the-discriminating-experiment: given `B` with competing H1/H2,
+  pick the cheapest action whose predicted outcomes differ (plus the dual:
+  recognize when a candidate action is uninformative because all live
+  hypotheses predict the same outcome).
 - **P2 — expert iteration**: roll out the composed pair (25 games × 8
   rollouts ÷ 12–16 concurrent ≈ 2 h/iteration at small-model speeds), filter
   by reward, SFT on winners, repeat. GRPO only if EI plateaus — EI is more
@@ -155,8 +184,12 @@ Two-pass, filtered:
    accurate without leaking future facts).
 3. **Filters, cheap→expensive**: schema validation → prediction check (B_t
    must predict the logged a_t outcome; compare to logged o_{t+1} — free) →
-   hindsight-leak check (nothing referenced that wasn't visible by t) →
-   k-step rule-consistency spot check via replay.
+   hindsight-leak check → k-step rule-consistency spot check via replay.
+   The competing-hypotheses requirement makes the leak check *mechanical*:
+   a rule marked `confirmed` whose cited evidence turns precede the first
+   discriminating observation is by definition a hindsight leak — at
+   underdetermined turns the label must carry the live alternatives, not
+   the (true) winner.
 4. Prioritize level-completing episodes and surprise-rich segments. For games
    no annotator understands, keep prediction-only data, skip belief labels.
    For cd82, baseline1's EWM trajectories are a solved-6/6 source.
