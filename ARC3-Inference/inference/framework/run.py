@@ -696,6 +696,21 @@ def _split_pass_ranges(total_passes: int, group_count: int) -> list[tuple[int, i
     return ranges
 
 
+def _split_total_across_groups(total: int, group_count: int) -> list[int]:
+    if total <= 0:
+        raise ValueError("--concurrent-jobs must be positive.")
+    if group_count <= 1:
+        return [total]
+    if total < group_count:
+        raise ValueError(
+            "--concurrent-jobs must be at least the number of local-server jobs when "
+            "--slurm-start-local-server is enabled."
+        )
+    base = total // group_count
+    remainder = total % group_count
+    return [base + (1 if index < remainder else 0) for index in range(group_count)]
+
+
 def _resolve_config_path(raw_path: str) -> Path:
     path = Path(str(raw_path or "").strip())
     if not path.is_absolute():
@@ -926,10 +941,16 @@ def _write_run_config(
 
 
 def _run_split_slurm_local_servers(
-    args: argparse.Namespace, *, game_ids: list[str]
+    args: argparse.Namespace,
+    *,
+    game_ids: list[str],
+    arcade_spec: taaf.game_api.ArcadeSpec | None = None,
 ) -> None:
     group_count = _slurm_local_server_job_count(args)
     pass_ranges = _split_pass_ranges(int(args.n_passes), group_count)
+    concurrent_jobs_per_group = _split_total_across_groups(
+        int(args.concurrent_jobs), len(pass_ranges)
+    )
     max_experiment_runtime_minutes = _max_experiment_runtime_minutes(args)
     total_gpu_count = int(args.slurm_gpu_count)
 
@@ -1004,9 +1025,10 @@ def _run_split_slurm_local_servers(
     print(f"Games: {', '.join(game_ids)}")
     print(
         "Split Slurm local-server run: "
-        f"{len(pass_ranges)} jobs; 1 GPU/job; {total_gpu_count} GPUs total"
+        f"{len(pass_ranges)} jobs; 1 GPU/job; {total_gpu_count} GPUs total; "
+        f"concurrency total {args.concurrent_jobs}"
     )
-    print(f"Total passes: {args.n_passes}; concurrency/job: {args.concurrent_jobs}")
+    print(f"Total passes: {args.n_passes}; concurrency: {args.concurrent_jobs}")
     print(
         "Max runtime per game: "
         f"{parent_runtime:.2f} minutes ({parent_runtime_source}; largest child wave count {parent_wave_count})"
@@ -1028,6 +1050,7 @@ def _run_split_slurm_local_servers(
         child_args = _copy_args(
             args,
             n_passes=pass_count,
+            concurrent_jobs=concurrent_jobs_per_group[group_index],
             run_name=child_label,
             pass_offset=pass_start,
             slurm_gpu_count=1,
@@ -1055,6 +1078,7 @@ def _run_split_slurm_local_servers(
                     "gpu_count": total_gpu_count,
                 },
                 "slurm_job_gpu_count": 1,
+                "concurrent_jobs": concurrent_jobs_per_group[group_index],
             },
         )
 
@@ -1068,6 +1092,7 @@ def _run_split_slurm_local_servers(
             games=_make_games(
                 game_ids,
                 environments_dir=args.environments_dir,
+                arcade_spec=arcade_spec,
             ),
             solver=solver,
             n_passes=pass_count,
@@ -1075,7 +1100,8 @@ def _run_split_slurm_local_servers(
         )
         print(
             f"Group {group_index}: passes {pass_start}-{pass_start + pass_count - 1}; "
-            f"port {port}; waves {waves}; max {runtime:.2f} min/game"
+            f"port {port}; waves {waves}; max {runtime:.2f} min/game; "
+            f"concurrency {concurrent_jobs_per_group[group_index]}"
         )
         handle = asyncio.run(
             benchmark.deploy(
@@ -1109,6 +1135,15 @@ def _run(args: argparse.Namespace) -> None:
         if args.list_games:
             for game_id in game_ids:
                 print(game_id)
+            return
+        if (
+            str(args.deployment_target).strip().lower() == "slurm"
+            and bool(args.slurm_start_local_server)
+            and int(args.slurm_gpu_count) > 1
+        ):
+            _run_split_slurm_local_servers(
+                args, game_ids=game_ids, arcade_spec=arcade_spec
+            )
             return
 
         max_experiment_runtime_minutes = _max_experiment_runtime_minutes(args)

@@ -34,5 +34,8 @@ export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 # request. The nvhpc module ships CUDA 12.6.
 export CUDA_HOME="${CUDA_HOME:-/opt/ohpc/pub/apps/nvidia/nvhpc/24.11/Linux_x86_64/24.11/cuda/12.6}"
 
-# Every h100 node here exposes a single GPU; a 2-GPU gres is unschedulable.
-exec make sbatch DEPLOYMENT_SLURM_GPU_COUNT=1 "$@"
+# Every h100 node here exposes a single GPU, so a multi-GPU gres is unschedulable.
+# With deployment.slurm.gpu_count > 1 the harness instead submits one 1-GPU job
+# per GPU and splits the passes (and concurrent_jobs) across them -- see
+# _run_split_slurm_local_servers. So gpu_count 2 = 2 jobs x 1 H100.
+exec make sbatch "$@"
