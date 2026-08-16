@@ -228,7 +228,17 @@ def _write_dependency_overrides(run_dir: Path, source_repos: list[Path]) -> Path
 # the repo's .cache/arc3_runtime, and uv honours ``$XDG_CACHE_HOME/uv`` when
 # ``UV_CACHE_DIR`` is unset -- so the worker would resolve against a nearly
 # empty cache instead of the shared ``~/.cache/uv`` that was prefetched.
-_SLURM_FORWARDED_ENV = ("UV_CACHE_DIR", "UV_OFFLINE", "HF_HOME", "HF_HUB_OFFLINE")
+# ``CUDA_HOME``: flashinfer JIT-compiles Qwen3.x's GDN linear-attention kernels
+# with nvcc at first inference. The compute nodes have no system CUDA toolkit;
+# pointing this at a module-provided one (e.g. nvhpc's cuda/12.6) is the
+# difference between serving and 500-ing every request.
+_SLURM_FORWARDED_ENV = (
+    "UV_CACHE_DIR",
+    "UV_OFFLINE",
+    "HF_HOME",
+    "HF_HUB_OFFLINE",
+    "CUDA_HOME",
+)
 
 
 def _format_slurm_export_flag(
