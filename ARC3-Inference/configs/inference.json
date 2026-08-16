@@ -15,25 +15,25 @@
     "exclude_tags": [],
     "games": [],
     "max_steps": null,
-    "max_runtime_minutes": 45,
+    "max_runtime_minutes": 60,
     "max_experiment_runtime_minutes": null,
     "max_experiment_runtime_hours": null,
-    "n_passes": 20,
-    "concurrent_jobs": 32
+    "n_passes": 10,
+    "concurrent_jobs": 16
   },
   "deployment": {
     "target": "inline",
     "wait": false,
     "source_repos": ["../tufa-arc-agi-framework"],
     "slurm": {
-      "gpu": "B200",
+      "gpu": "H100",
       "gpu_count": 2,
-      "time": "13:00:00",
+      "time": "16:00:00",
       "image": "",
-      "partition": "gpu",
+      "partition": "gpuqs,condo",
       "nodelist": "",
       "start_local_server": true,
-      "extra_sbatch_flags": ["--account=default", "--qos=normal"]
+      "extra_sbatch_flags": ["--account=default", "--qos=normal", "--exclusive"]
     }
   },
   "server" : {
@@ -42,11 +42,14 @@
     "port": 1234,
     "tensor_parallel_size": 1,
     "dtype": "auto",
+    "kv_cache_dtype": "fp8",
+    "max_num_seqs": 512,
     "gpu_memory_utilization": 0.92,
     "trust_remote_code": true,
     "generation_config": "vllm",
     "language_model_only": false,
     "enable_prefix_caching": true,
+    "max_images": 4,
     "tool_call_parser": "qwen3_coder",
     "reasoning_parser": "qwen3",
     "speculative_config": "",
@@ -61,13 +64,15 @@
     "app_name": "ARC3 Agent Harness",
     "max_output": 0,
     "thinking": true,
+    "model_update_mode": "tool",
     "temperature": 1.0,
     "top_p": 0.95,
     "top_k": 20,
-    "timeout": 120,
+    "timeout": 240,
     "tool_steps": 0,
     "tool_timeout": 30,
     "tool_output_tokens": 1024,
+    "context_steps": 4,
     "save_request_logs": false
   },
   "chat": {

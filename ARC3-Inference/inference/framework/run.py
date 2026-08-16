@@ -1317,7 +1317,9 @@ def main() -> None:
         help="Only write the Kaggle source/kernel bundles locally; do not upload.",
     )
     parser.add_argument("--kaggle-dataset-version-message", default="")
-    parser.add_argument("--slurm-gpu", choices=["B200", "B300", "RTX"], default="B200")
+    parser.add_argument(
+        "--slurm-gpu", choices=["B200", "B300", "RTX", "H100", "A100"], default="B200"
+    )
     parser.add_argument("--slurm-gpu-count", type=int, default=1)
     parser.add_argument("--slurm-time", default="06:00:00")
     parser.add_argument("--slurm-image", default="")

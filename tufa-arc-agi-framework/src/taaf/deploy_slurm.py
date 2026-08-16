@@ -32,16 +32,19 @@ import taaf.benchmark
 import taaf.deploy
 import taaf.support
 
-GPU = Literal["B200", "B300", "RTX", "CPU"]
+GPU = Literal["B200", "B300", "RTX", "H100", "A100", "CPU"]
 
 # Hardware tier → ``--gres=gpu:<name>:<count>`` (e.g. ``gpu:b200:8``).
 # ``B300``/``RTX`` follow the same naming convention forward-compat.
+# ``H100``/``A100`` are what the SJSU coe-hpc gpuq* partitions actually expose.
 # ``CPU`` → no ``--gres`` and switches the rendering to
 # ``--cpus-per-task``/``--mem``.
 _GPU_GRES_NAMES: dict[str, str | None] = {
     "B200": "b200",
     "B300": "b300",
     "RTX": "rtx",
+    "H100": "h100",
+    "A100": "a100",
     "CPU": None,
 }
 
