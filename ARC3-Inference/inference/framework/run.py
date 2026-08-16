@@ -223,11 +223,25 @@ def _write_dependency_overrides(run_dir: Path, source_repos: list[Path]) -> Path
     return override_path
 
 
+# Submit-time variables the worker's bootstrap needs on nodes without internet.
+# ``UV_CACHE_DIR`` matters most: the Makefile exports ``XDG_CACHE_HOME`` under
+# the repo's .cache/arc3_runtime, and uv honours ``$XDG_CACHE_HOME/uv`` when
+# ``UV_CACHE_DIR`` is unset -- so the worker would resolve against a nearly
+# empty cache instead of the shared ``~/.cache/uv`` that was prefetched.
+_SLURM_FORWARDED_ENV = ("UV_CACHE_DIR", "UV_OFFLINE", "HF_HOME", "HF_HUB_OFFLINE")
+
+
 def _format_slurm_export_flag(
     override_path: Path, extra_env: dict[str, str] | None = None
 ) -> str:
     values = ["ALL", f"UV_OVERRIDE={override_path}"]
-    for name, value in (extra_env or {}).items():
+    forwarded = {
+        name: os.environ[name]
+        for name in _SLURM_FORWARDED_ENV
+        if os.environ.get(name, "").strip()
+    }
+    forwarded.update(extra_env or {})
+    for name, value in forwarded.items():
         clean_name = str(name).strip()
         if not clean_name:
             continue
