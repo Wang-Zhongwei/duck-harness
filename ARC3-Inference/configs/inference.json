@@ -1,6 +1,6 @@
 {
   "shared": {
-    "model_name": "vrfai/Qwen3.6-27B-FP8",
+    "model_name": "Qwen/Qwen3.8-27B-FP8",
     "base_url": "http://127.0.0.1:1234/v1",
     "provider": "vllm",
     "context_window": 32768
@@ -49,15 +49,19 @@
     "enable_prefix_caching": true,
     "tool_call_parser": "qwen3_coder",
     "reasoning_parser": "qwen3",
+    "speculative_config": "",
+    "hf_overrides": "",
+    "allow_long_max_model_len": false,
     "default_chat_template_kwargs": {
-      "preserve_thinking": true
+      "preserve_thinking": true,
+      "reasoning_effort": "xhigh"
     }
   },
   "analyzer": {
     "app_name": "ARC3 Agent Harness",
     "max_output": 0,
     "thinking": true,
-    "temperature": 0.6,
+    "temperature": 1.0,
     "top_p": 0.95,
     "top_k": 20,
     "timeout": 120,
@@ -68,8 +72,8 @@
   },
   "chat": {
     "max_tokens": 2048,
-    "temperature": 0.7,
-    "top_p": 0.8,
+    "temperature": 1.0,
+    "top_p": 0.95,
     "top_k": 20,
     "thinking": true
   },

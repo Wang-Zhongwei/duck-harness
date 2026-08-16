@@ -116,6 +116,14 @@ SERVER_ENABLE_PREFIX_CACHING ?= $(shell $(CONFIG_VALUE) server.enable_prefix_cac
 SERVER_DEFAULT_CHAT_TEMPLATE_KWARGS ?= $(shell $(CONFIG_VALUE) server.default_chat_template_kwargs)
 SERVER_TOOL_CALL_PARSER ?= $(shell $(CONFIG_VALUE) server.tool_call_parser qwen3_coder)
 SERVER_REASONING_PARSER ?= $(shell $(CONFIG_VALUE) server.reasoning_parser)
+# MTP self-speculative decoding. Empty disables it (vLLM default). To enable:
+#   "speculative_config": {"method": "mtp", "num_speculative_tokens": 3}
+SERVER_SPECULATIVE_CONFIG ?= $(shell $(CONFIG_VALUE) server.speculative_config)
+# Raw HF config overrides, e.g. YaRN rope scaling past the 262144 native context.
+# Empty leaves the checkpoint config untouched (vLLM default). Static YaRN degrades
+# short contexts, so only set this when max_model_len actually exceeds 262144.
+SERVER_HF_OVERRIDES ?= $(shell $(CONFIG_VALUE) server.hf_overrides)
+SERVER_ALLOW_LONG_MAX_MODEL_LEN ?= $(shell $(CONFIG_VALUE) server.allow_long_max_model_len false)
 SERVER_ENABLE_LORA ?= false
 SERVER_MAX_LORAS ?= 1
 SERVER_MAX_LORA_RANK ?= 16
@@ -296,7 +304,7 @@ server:
 		: >"$(SERVER_LOG)"; \
 			echo "Starting vLLM inference server for $(SERVER_MODEL)"; \
 			echo "Logs: $(SERVER_LOG)"; \
-				TMPDIR="$(SERVER_TMP_DIR)" TMP="$(SERVER_TMP_DIR)" TEMP="$(SERVER_TMP_DIR)" XDG_CACHE_HOME="$(XDG_CACHE_HOME)" TORCHINDUCTOR_CACHE_DIR="$(TORCHINDUCTOR_CACHE_DIR)" TORCHINDUCTOR_FX_GRAPH_CACHE_DIR="$(TORCHINDUCTOR_FX_GRAPH_CACHE_DIR)" TRITON_CACHE_DIR="$(TRITON_CACHE_DIR)" VLLM_ALLOW_RUNTIME_LORA_UPDATING="$(SERVER_ALLOW_RUNTIME_LORA_UPDATING)" VLLM_API_KEY="$$server_api_key" ARC3_PATCH_VLLM_RUNTIME_LORA="1" PYTHONPATH="$(REPO_ROOT):$$PYTHONPATH" PATH="$(SERVER_VENV_BIN):$$PATH" nohup "$(SERVER_VENV_VLLM)" serve "$(SERVER_MODEL)" \
+				TMPDIR="$(SERVER_TMP_DIR)" TMP="$(SERVER_TMP_DIR)" TEMP="$(SERVER_TMP_DIR)" XDG_CACHE_HOME="$(XDG_CACHE_HOME)" TORCHINDUCTOR_CACHE_DIR="$(TORCHINDUCTOR_CACHE_DIR)" TORCHINDUCTOR_FX_GRAPH_CACHE_DIR="$(TORCHINDUCTOR_FX_GRAPH_CACHE_DIR)" TRITON_CACHE_DIR="$(TRITON_CACHE_DIR)" VLLM_ALLOW_RUNTIME_LORA_UPDATING="$(SERVER_ALLOW_RUNTIME_LORA_UPDATING)" $(if $(filter true TRUE 1 yes YES on ON,$(SERVER_ALLOW_LONG_MAX_MODEL_LEN)),VLLM_ALLOW_LONG_MAX_MODEL_LEN="1") VLLM_API_KEY="$$server_api_key" ARC3_PATCH_VLLM_RUNTIME_LORA="1" PYTHONPATH="$(REPO_ROOT):$$PYTHONPATH" PATH="$(SERVER_VENV_BIN):$$PATH" nohup "$(SERVER_VENV_VLLM)" serve "$(SERVER_MODEL)" \
 					--host "$(SERVER_HOST)" \
 				--port "$(SERVER_PORT)" \
 				--served-model-name "$(SERVER_SERVED_MODEL_NAME)" \
@@ -313,6 +321,8 @@ server:
 				--enable-auto-tool-choice \
 				--tool-call-parser "$(SERVER_TOOL_CALL_PARSER)" \
 				$(if $(SERVER_REASONING_PARSER),--reasoning-parser "$(SERVER_REASONING_PARSER)") \
+				$(if $(SERVER_SPECULATIVE_CONFIG),--speculative-config '$(SERVER_SPECULATIVE_CONFIG)') \
+				$(if $(SERVER_HF_OVERRIDES),--hf-overrides '$(SERVER_HF_OVERRIDES)') \
 			>"$(SERVER_LOG)" 2>&1 & echo $$! >"$(SERVER_PID)"; \
 		echo "PID: $$(cat "$(SERVER_PID)")"; \
 		echo "First startup can take several minutes while vLLM loads weights and builds compile/cache artifacts."; \
