@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from inference.utils.openai_compat import normalize_provider
 
 DEFAULT_VLLM_WHEELHOUSE_DATASET_SOURCE = "driessmit1/arc3-vllm-h100-wheelhouse-v3"
-DEFAULT_QWEN_MODEL_DATASET_SOURCE = "driessmit1/vrfai-qwen3-6-27b-fp8-hf-snapshot"
-DEFAULT_SERVED_MODEL_NAME = "vrfai/Qwen3.6-27B-FP8"
+DEFAULT_QWEN_MODEL_DATASET_SOURCE = "jakobbrggen/qwen3-8-27b-fp8-hf-snapshot"
+DEFAULT_SERVED_MODEL_NAME = "Qwen/Qwen3.8-27B-FP8"
 DEFAULT_VLLM_PORT = 1234
-DEFAULT_VLLM_MAX_MODEL_LEN = 65536
+DEFAULT_VLLM_MAX_MODEL_LEN = 131072
 DEFAULT_VLLM_TENSOR_PARALLEL_SIZE = 1
 DEFAULT_WHEELHOUSE_STAMP_TEXT = "vllm==0.19.0 torch==2.10.0 flashinfer==0.6.6\n"
 
@@ -119,6 +119,9 @@ def duck_kaggle_setup_command(config: DuckKaggleVllmConfig | None = None) -> str
         "__MULTIMODAL_CONTEXT__": repr(os.environ.get("MULTIMODAL_CONTEXT", "current_grid")),
         "__MULTIMODAL_UPSCALE__": repr(os.environ.get("MULTIMODAL_UPSCALE", "4")),
         "__VLLM_TENSOR_PARALLEL_SIZE__": repr(int(cfg.tensor_parallel_size)),
+        # JSON server.speculative_config, exported by the launcher's Makefile.
+        # Empty (the default) omits --speculative-config entirely.
+        "__VLLM_SPECULATIVE_CONFIG__": repr(os.environ.get("SERVER_SPECULATIVE_CONFIG", "")),
         "__WHEELHOUSE_STAMP_TEXT__": repr(cfg.wheelhouse_stamp_text),
     }
     script = _DUCK_VLLM_SETUP_SCRIPT
@@ -160,6 +163,9 @@ VLLM_BASE_URL = f'http://{VLLM_HOST}:{VLLM_PORT}/v1'
 VLLM_MAX_MODEL_LEN = __VLLM_MAX_MODEL_LEN__
 ANALYZER_CONTEXT_WINDOW = __ANALYZER_CONTEXT_WINDOW__
 VLLM_TENSOR_PARALLEL_SIZE = __VLLM_TENSOR_PARALLEL_SIZE__
+# MTP self-speculative decoding, mirrored from JSON server.speculative_config.
+# Empty leaves it off (vLLM default), matching the local/slurm path in the Makefile.
+VLLM_SPECULATIVE_CONFIG = __VLLM_SPECULATIVE_CONFIG__
 WORKING_DIR = Path(os.environ['TAAF_KAGGLE_WORKING_DIR'])
 SITE_PACKAGES = WORKING_DIR / 'vllm-site-packages'
 VLLM_SERVER_LOG = WORKING_DIR / 'vllm-openai-server.log'
@@ -329,12 +335,14 @@ def start_vllm_server() -> None:
         'vllm',
         '--enable-prefix-caching',
         '--default-chat-template-kwargs',
-        '{"preserve_thinking": true}',
+        '{"preserve_thinking": true, "reasoning_effort": "xhigh"}',
         '--reasoning-parser',
         'qwen3',
         '--max-model-len',
         str(VLLM_MAX_MODEL_LEN),
     ]
+    if str(VLLM_SPECULATIVE_CONFIG).strip():
+        cmd += ['--speculative-config', str(VLLM_SPECULATIVE_CONFIG).strip()]
     print('Starting vLLM OpenAI server:', ' '.join(cmd), flush=True)
     process = subprocess.Popen(cmd, env=vllm_env(), stdout=log_handle, stderr=subprocess.STDOUT, text=True)
     VLLM_SERVER_PID.write_text(str(process.pid), encoding='utf-8')

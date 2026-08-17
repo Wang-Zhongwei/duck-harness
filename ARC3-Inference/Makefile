@@ -213,6 +213,10 @@ export LOCAL_ANALYZER_SITE_URL
 export LOCAL_ANALYZER_APP_NAME
 export MULTIMODAL_CONTEXT
 export MULTIMODAL_UPSCALE
+# Kaggle's vLLM launch lives in inference/framework/kaggle.py, which reads this
+# from the environment. Without the export, JSON server.speculative_config would
+# apply on the local/slurm path only and silently not on Kaggle.
+export SERVER_SPECULATIVE_CONFIG
 export CHAT_PROVIDER
 export OPENROUTER_API_KEY
 export OPENAI_API_KEY
