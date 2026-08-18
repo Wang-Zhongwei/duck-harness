@@ -52,7 +52,7 @@
     "max_images": 4,
     "tool_call_parser": "qwen3_coder",
     "reasoning_parser": "qwen3",
-    "speculative_config": {"method": "mtp", "num_speculative_tokens": 2},
+    "speculative_config": {"method": "mtp", "num_speculative_tokens": 1},
     "hf_overrides": "",
     "allow_long_max_model_len": false,
     "default_chat_template_kwargs": {
