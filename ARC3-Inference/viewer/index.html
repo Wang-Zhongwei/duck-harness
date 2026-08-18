@@ -97,6 +97,8 @@
       border-color: var(--ink);
     }
 
+    .button-link { display: inline-flex; align-items: center; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent-soft); color: #74340f; padding: 9px 14px; font: inherit; font-weight: 700; text-decoration: none; white-space: nowrap; }
+
     .content {
       display: grid;
       grid-template-columns: minmax(560px, 2fr) 220px minmax(320px, 1fr);
@@ -621,6 +623,7 @@
       <div class="controls">
         <select id="run-select" aria-label="Run selector"></select>
         <select id="game-select" aria-label="Game selector"></select>
+        <a class="button-link" href="/comparison">Compare runs</a>
         <button id="reload-button" type="button">Reload</button>
       </div>
     </div>

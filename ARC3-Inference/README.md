@@ -343,6 +343,10 @@ present, and otherwise asks TAAF's `GameRun` scorer to compute the score from
 the saved state. It writes `evaluation.json` plus the lightweight `score.json`
 format used by significance checks.
 
+Each single-run scoring also upserts the complete score payload into
+`inference_score_comparison.json`. The viewer uses this versioned registry to
+compare any two scored runs without regenerating pair-specific files.
+
 ## Significance
 
 Compare a candidate score file against a current best:

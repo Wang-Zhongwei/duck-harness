@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ARC3 Inference vs Score</title>
+  <style>
+    :root {
+      --bg:#f5f1e8; --panel:#fffaf1; --ink:#18242d; --muted:#6f7f88;
+      --line:#d8cdbb; --accent:#c55d1f; --base:#647985;
+      --good:#25705a; --bad:#a34135; --shadow:0 18px 45px #18242d14;
+    }
+    * { box-sizing:border-box; }
+    body {
+      margin:0; padding:16px; color:var(--ink); font-family:"Segoe UI",sans-serif;
+      background:radial-gradient(circle at top left,#fff4dc,transparent 32rem),var(--bg);
+    }
+    main { max-width:1450px; margin:auto; display:grid; gap:14px; }
+    .top,.panel {
+      background:#fffaf1f5; border:1px solid #18242d14; border-radius:18px;
+      box-shadow:var(--shadow);
+    }
+    .top { padding:18px 22px; display:flex; justify-content:space-between; gap:18px; align-items:center; }
+    .panel { padding:18px; }
+    h1,h2,h3,p { margin-top:0; }
+    h1 { margin-bottom:4px; font-size:clamp(1.5rem,3vw,2.3rem); letter-spacing:-.04em; }
+    h2 { margin-bottom:4px; font-size:1rem; text-transform:uppercase; letter-spacing:.08em; }
+    h3 { margin-bottom:4px; font-size:.92rem; }
+    .muted,.note { color:var(--muted); }
+    .back,.pill,select {
+      border:1px solid var(--line); border-radius:999px; background:#fff; color:var(--ink);
+      padding:9px 14px; font:inherit;
+    }
+    .back { text-decoration:none; font-weight:700; white-space:nowrap; }
+    .selectors {
+      display:grid; grid-template-columns:minmax(180px,1fr) auto minmax(180px,1fr);
+      gap:10px; align-items:end;
+    }
+    .select-wrap { display:grid; gap:5px; }
+    .select-wrap label { color:var(--muted); font-size:.7rem; font-weight:700; text-transform:uppercase; letter-spacing:.08em; }
+    select { width:100%; min-width:0; }
+    .pill { cursor:pointer; font-weight:700; }
+    .hero { display:grid; grid-template-columns:minmax(270px,.9fr) minmax(0,2.1fr); gap:14px; }
+    .score {
+      padding:22px; border-radius:18px; color:#fff;
+      background:linear-gradient(140deg,#21313a,#17232b); display:grid; align-content:center;
+      min-height:220px;
+    }
+    .eyebrow { text-transform:uppercase; letter-spacing:.1em; font-size:.7rem; font-weight:700; opacity:.7; }
+    .score-line { display:flex; align-items:baseline; gap:12px; margin:12px 0 8px; }
+    .score-old { font-size:1.4rem; opacity:.6; }
+    .score-new { color:#ffd6b6; font-size:clamp(2.7rem,6vw,4.7rem); font-weight:800; letter-spacing:-.07em; }
+    .score-change { color:#a9ecd4; font-weight:700; }
+    .run-names {
+      margin-top:16px; padding-top:14px; border-top:1px solid #ffffff26;
+      display:grid; gap:5px; font:11px/1.5 monospace; overflow-wrap:anywhere;
+    }
+    .kpis { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+    .kpi { padding:15px; border-radius:15px; background:var(--panel); border:1px solid #18242d14; }
+    .label { color:var(--muted); font-size:.7rem; text-transform:uppercase; letter-spacing:.09em; font-weight:700; }
+    .value { margin-top:8px; font-size:1.5rem; font-weight:800; }
+    .change { margin-top:4px; font-size:.82rem; font-weight:700; }
+    .good { color:var(--good); } .bad { color:var(--bad); }
+    .outcomes { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+    .outcome { padding:14px; border-radius:14px; background:#18242d09; }
+    .outcome .value { font-size:1.35rem; }
+    .head { display:flex; justify-content:space-between; align-items:end; gap:14px; margin-bottom:14px; }
+    .metric-tabs { display:flex; gap:7px; flex-wrap:wrap; }
+    .metric-tab {
+      border:1px solid var(--line); border-radius:999px; background:#fff; color:var(--ink);
+      padding:7px 11px; cursor:pointer; font:inherit; font-size:.78rem;
+    }
+    .metric-tab.active { border-color:var(--accent); background:#f7dcc6; font-weight:700; }
+    .game-chart {
+      display:grid; gap:5px; max-height:680px; overflow:auto; padding-right:4px;
+    }
+    .game-row {
+      display:grid; grid-template-columns:145px 80px minmax(180px,1fr) 80px;
+      gap:9px; align-items:center; min-height:29px; font-size:.78rem;
+    }
+    .game-id { overflow:hidden; text-overflow:ellipsis; font-family:monospace; font-weight:700; }
+    .game-value { color:var(--muted); font-variant-numeric:tabular-nums; }
+    .game-value:last-child { text-align:right; }
+    .delta-track {
+      position:relative; height:18px; border-radius:5px; background:#18242d08;
+    }
+    .delta-track::after {
+      content:""; position:absolute; top:0; bottom:0; left:50%; width:1px; background:#18242d2e;
+    }
+    .delta-bar { position:absolute; top:3px; bottom:3px; border-radius:4px; min-width:1px; }
+    .delta-bar.positive { left:50%; background:var(--good); }
+    .delta-bar.negative { right:50%; background:var(--bad); }
+    .delta-label {
+      position:absolute; inset:0; display:grid; place-items:center;
+      font-size:.68rem; font-weight:800; z-index:1;
+    }
+    .grid2 { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+    .metrics { display:grid; gap:14px; }
+    .metric { display:grid; gap:6px; }
+    .metric-head { display:flex; justify-content:space-between; font-size:.83rem; font-weight:700; }
+    .pair { display:grid; grid-template-columns:65px minmax(0,1fr) 82px; gap:8px; align-items:center; font-size:.75rem; }
+    .track { height:9px; border-radius:9px; background:#18242d0f; overflow:hidden; }
+    .bar { height:100%; min-width:2px; background:var(--base); }
+    .bar.candidate { background:var(--accent); }
+    .right { text-align:right; font-variant-numeric:tabular-nums; }
+    .efficiency { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+    .eff-card { padding:14px; border-radius:14px; background:#18242d09; }
+    .eff-values { display:flex; justify-content:space-between; margin-top:10px; gap:12px; }
+    .eff-values div { display:grid; gap:3px; }
+    .eff-values span { color:var(--muted); font-size:.67rem; text-transform:uppercase; }
+    details.panel { padding:0; }
+    summary { cursor:pointer; padding:18px; font-weight:700; list-style:none; }
+    summary::-webkit-details-marker { display:none; }
+    summary::after { content:"Show"; float:right; color:var(--muted); font-size:.75rem; }
+    details[open] summary::after { content:"Hide"; }
+    .catalog { overflow:auto; border-top:1px solid #18242d14; }
+    table { width:100%; border-collapse:collapse; font-size:.8rem; }
+    th,td { padding:9px 12px; border-bottom:1px solid #18242d0f; text-align:right; white-space:nowrap; }
+    th { color:var(--muted); font-size:.67rem; text-transform:uppercase; }
+    th:first-child,td:first-child { text-align:left; }
+    .catalog-run { font-family:monospace; font-weight:700; }
+    .empty { text-align:center; padding:40px; color:var(--muted); }
+    @media(max-width:900px) {
+      .top { align-items:flex-start; flex-direction:column; }
+      .hero,.grid2 { grid-template-columns:1fr; }
+      .outcomes,.efficiency { grid-template-columns:repeat(2,1fr); }
+    }
+    @media(max-width:600px) {
+      body { padding:8px; }
+      .selectors { grid-template-columns:1fr; width:100%; }
+      .kpis,.outcomes,.efficiency { grid-template-columns:1fr; }
+      .game-row { grid-template-columns:105px 62px minmax(120px,1fr) 62px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="top">
+      <div>
+        <h1>Inference vs Score</h1>
+        <div class="muted" id="subtitle">Loading scored runs...</div>
+      </div>
+      <a class="back" href="/">Back to viewer</a>
+    </header>
+
+    <section class="panel selectors" id="selectors" hidden>
+      <div class="select-wrap">
+        <label for="baseline-select">Baseline run</label>
+        <select id="baseline-select"></select>
+      </div>
+      <button class="pill" id="swap-button" type="button" aria-label="Swap selected runs">Swap</button>
+      <div class="select-wrap">
+        <label for="candidate-select">Candidate run</label>
+        <select id="candidate-select"></select>
+      </div>
+    </section>
+
+    <div id="dashboard" class="panel empty">Loading comparison registry...</div>
+  </main>
+
+  <script>
+    let registry = null;
+    let baselineId = "";
+    let candidateId = "";
+    let gameMetric = "score";
+
+    const metricDefinitions = {
+      score: { label: "Score", field: "score", digits: 2 },
+      actions: { label: "Mean actions", field: "actions_mean", digits: 1 },
+      turns: { label: "Mean turns", field: "turns_mean", digits: 1 },
+      tokens: { label: "Mean tokens", field: "total_tokens_mean", digits: 0 },
+    };
+
+    function escapeHtml(value) {
+      return String(value == null ? "" : value)
+        .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+    }
+
+    function formatNumber(value, digits) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "-";
+      const precision = digits == null ? (Math.abs(number) >= 100 ? 0 : 2) : digits;
+      return number.toLocaleString(undefined, {
+        maximumFractionDigits: precision,
+        minimumFractionDigits: precision,
+      });
+    }
+
+    function formatSigned(value, suffix = "", digits = 1) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "-";
+      return (number > 0 ? "+" : "") + formatNumber(number, digits) + suffix;
+    }
+
+    function percentChange(baseline, candidate) {
+      const before = Number(baseline);
+      return Number.isFinite(before) && before !== 0
+        ? (Number(candidate) - before) / before * 100
+        : null;
+    }
+
+    function runScore(runId) {
+      return registry.runs[runId].score;
+    }
+
+    function runLabel(runId) {
+      const score = runScore(runId);
+      const createdAt = score.metadata?.created_at;
+      return createdAt ? runId + " / " + createdAt.slice(0, 10) : runId;
+    }
+
+    function efficiency(score) {
+      const mean = score.usage?.mean || {};
+      return {
+        tokens: score.score / (mean.total_tokens / 1000000),
+        turns: score.score / (mean.turns / 100),
+        actions: score.score / (mean.actions / 100),
+      };
+    }
+
+    function commonGames(baseline, candidate) {
+      return Object.keys(baseline.games || {})
+        .filter((gameId) => candidate.games?.[gameId])
+        .map((gameId) => ({
+          gameId,
+          baseline: baseline.games[gameId],
+          candidate: candidate.games[gameId],
+        }));
+    }
+
+    function median(values) {
+      if (!values.length) return null;
+      const sorted = [...values].sort((a, b) => a - b);
+      const middle = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+    }
+
+    function metricCard(label, baseline, candidate, lowerIsBetter = true) {
+      const change = percentChange(baseline, candidate);
+      const good = change == null || change === 0 ? "" : ((lowerIsBetter ? change < 0 : change > 0) ? "good" : "bad");
+      return '<article class="kpi"><div class="label">' + escapeHtml(label) + '</div>' +
+        '<div class="value">' + formatNumber(candidate) + '</div>' +
+        '<div class="change ' + good + '">' + formatSigned(change, "%", 1) +
+        ' vs ' + formatNumber(baseline) + '</div></article>';
+    }
+
+    function pairedMetrics(metrics, definitions) {
+      return '<div class="metrics">' + definitions.map((definition) => {
+        const metric = metrics[definition.key] || {};
+        const max = Math.max(Math.abs(Number(metric.baseline) || 0), Math.abs(Number(metric.candidate) || 0), 1);
+        const change = percentChange(metric.baseline, metric.candidate);
+        return '<div class="metric"><div class="metric-head"><span>' + escapeHtml(definition.label) +
+          '</span><span class="muted">' + formatSigned(change, "%", 1) + '</span></div>' +
+          '<div class="pair"><span>Baseline</span><div class="track"><div class="bar" style="width:' +
+          (Math.abs(Number(metric.baseline) || 0) / max * 100) + '%"></div></div><span class="right">' +
+          formatNumber(metric.baseline, definition.digits) + '</span></div>' +
+          '<div class="pair"><span>Candidate</span><div class="track"><div class="bar candidate" style="width:' +
+          (Math.abs(Number(metric.candidate) || 0) / max * 100) + '%"></div></div><span class="right">' +
+          formatNumber(metric.candidate, definition.digits) + '</span></div></div>';
+      }).join("") + '</div>';
+    }
+
+    function efficiencyCard(label, key, baseline, candidate) {
+      const before = efficiency(baseline)[key];
+      const after = efficiency(candidate)[key];
+      const change = percentChange(before, after);
+      return '<article class="eff-card"><h3>' + escapeHtml(label) + '</h3>' +
+        '<div class="change ' + (change > 0 ? "good" : change < 0 ? "bad" : "") + '">' +
+        formatSigned(change, "%", 1) + '</div><div class="eff-values">' +
+        '<div><strong>' + formatNumber(before, 2) + '</strong><span>Baseline</span></div>' +
+        '<div><strong>' + formatNumber(after, 2) + '</strong><span>Candidate</span></div></div></article>';
+    }
+
+    function renderGameChart(games) {
+      const definition = metricDefinitions[gameMetric];
+      const rows = games.map((game) => {
+        const baseline = Number(game.baseline[definition.field]);
+        const candidate = Number(game.candidate[definition.field]);
+        return { ...game, baselineValue: baseline, candidateValue: candidate, delta: candidate - baseline };
+      }).filter((row) => Number.isFinite(row.delta))
+        .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+      const maxDelta = Math.max(...rows.map((row) => Math.abs(row.delta)), 1);
+      document.getElementById("game-chart").innerHTML = rows.map((row) => {
+        const width = Math.abs(row.delta) / maxDelta * 49;
+        const direction = row.delta >= 0 ? "positive" : "negative";
+        return '<div class="game-row"><span class="game-id" title="' + escapeHtml(row.gameId) + '">' +
+          escapeHtml(row.gameId) + '</span><span class="game-value">' +
+          formatNumber(row.baselineValue, definition.digits) + '</span><div class="delta-track">' +
+          '<span class="delta-bar ' + direction + '" style="width:' + width + '%"></span>' +
+          '<span class="delta-label">' + formatSigned(row.delta, "", definition.digits) + '</span></div>' +
+          '<span class="game-value">' + formatNumber(row.candidateValue, definition.digits) + '</span></div>';
+      }).join("");
+
+      document.querySelectorAll(".metric-tab").forEach((button) => {
+        button.classList.toggle("active", button.dataset.metric === gameMetric);
+      });
+    }
+
+    function renderCatalog() {
+      const order = registry.run_order || Object.keys(registry.runs);
+      return order.map((runId) => {
+        const score = runScore(runId);
+        const mean = score.usage?.mean || {};
+        const selected = runId === baselineId ? "Baseline" : runId === candidateId ? "Candidate" : "";
+        return '<tr><td class="catalog-run">' + escapeHtml(runId) + '</td><td>' +
+          escapeHtml(selected) + '</td><td>' + formatNumber(score.score, 3) + '</td><td>' +
+          formatNumber(mean.actions, 1) + '</td><td>' + formatNumber(mean.turns, 1) + '</td><td>' +
+          formatNumber(mean.total_tokens, 0) + '</td></tr>';
+      }).join("");
+    }
+
+    function render() {
+      const baseline = runScore(baselineId);
+      const candidate = runScore(candidateId);
+      const games = commonGames(baseline, candidate);
+      const scoreDeltas = games.map((game) => Number(game.candidate.score) - Number(game.baseline.score));
+      const improved = scoreDeltas.filter((delta) => delta > 1e-9).length;
+      const regressed = scoreDeltas.filter((delta) => delta < -1e-9).length;
+      const tied = scoreDeltas.length - improved - regressed;
+      const scoreDelta = candidate.score - baseline.score;
+      const scoreChange = percentChange(baseline.score, candidate.score);
+      const baselineMean = baseline.usage?.mean || {};
+      const candidateMean = candidate.usage?.mean || {};
+      const serverMetrics = {
+        prompt: {
+          baseline: baseline.server?.prompt_throughput_tokens_per_s?.mean,
+          candidate: candidate.server?.prompt_throughput_tokens_per_s?.mean,
+        },
+        generation: {
+          baseline: baseline.server?.generation_throughput_tokens_per_s?.mean,
+          candidate: candidate.server?.generation_throughput_tokens_per_s?.mean,
+        },
+        prefix: {
+          baseline: baseline.server?.prefix_cache_hit_rate_pct?.mean,
+          candidate: candidate.server?.prefix_cache_hit_rate_pct?.mean,
+        },
+        kv: {
+          baseline: baseline.server?.gpu_kv_cache_usage_pct?.mean,
+          candidate: candidate.server?.gpu_kv_cache_usage_pct?.mean,
+        },
+      };
+
+      document.getElementById("subtitle").textContent =
+        (registry.run_order?.length || Object.keys(registry.runs).length) + " scored runs available";
+      document.getElementById("dashboard").outerHTML =
+        '<div id="dashboard">' +
+        '<section class="hero"><article class="score"><div class="eyebrow">Overall score</div>' +
+        '<div class="score-line"><span class="score-old">' + formatNumber(baseline.score, 2) +
+        '</span><span>to</span><span class="score-new">' + formatNumber(candidate.score, 2) +
+        '</span></div><div class="score-change">' + formatSigned(scoreDelta, "", 2) + ' / ' +
+        formatSigned(scoreChange, "%", 1) + '</div><div class="run-names"><span>BASE / ' +
+        escapeHtml(baselineId) + '</span><span>CAND / ' + escapeHtml(candidateId) +
+        '</span></div></article><div class="kpis">' +
+        metricCard("Mean actions / trial", baselineMean.actions, candidateMean.actions) +
+        metricCard("Mean turns / trial", baselineMean.turns, candidateMean.turns) +
+        metricCard("Mean tokens / trial", baselineMean.total_tokens, candidateMean.total_tokens) +
+        metricCard("Tokens / action", baselineMean.tokens_per_action, candidateMean.tokens_per_action) +
+        '</div></section>' +
+
+        '<section class="panel"><div class="head"><div><h2>All-game outcome</h2>' +
+        '<div class="note">' + games.length + ' common games; score deltas summarize the whole set.</div></div></div>' +
+        '<div class="outcomes"><article class="outcome"><div class="label">Improved</div><div class="value good">' +
+        improved + '</div></article><article class="outcome"><div class="label">Regressed</div><div class="value bad">' +
+        regressed + '</div></article><article class="outcome"><div class="label">Tied</div><div class="value">' +
+        tied + '</div></article><article class="outcome"><div class="label">Median score delta</div><div class="value">' +
+        formatSigned(median(scoreDeltas), "", 2) + '</div></article></div></section>' +
+
+        '<section class="panel"><div class="head"><div><h2>Game-by-game distribution</h2>' +
+        '<div class="note">Sorted by largest absolute change. Center line is no change.</div></div>' +
+        '<div class="metric-tabs">' + Object.entries(metricDefinitions).map(([key, definition]) =>
+          '<button class="metric-tab ' + (key === gameMetric ? "active" : "") +
+          '" data-metric="' + key + '">' + escapeHtml(definition.label) + '</button>'
+        ).join("") + '</div></div><div class="game-row muted"><span>Game</span><span>Baseline</span>' +
+        '<span style="text-align:center">Candidate minus baseline</span><span style="text-align:right">Candidate</span>' +
+        '</div><div class="game-chart" id="game-chart"></div></section>' +
+
+        '<section class="panel"><div class="head"><div><h2>Score efficiency</h2>' +
+        '<div class="note">Higher means more score for the same inference budget.</div></div></div>' +
+        '<div class="efficiency">' +
+        efficiencyCard("Per 1M mean tokens", "tokens", baseline, candidate) +
+        efficiencyCard("Per 100 mean turns", "turns", baseline, candidate) +
+        efficiencyCard("Per 100 mean actions", "actions", baseline, candidate) +
+        '</div></section>' +
+
+        '<div class="grid2"><section class="panel"><div class="head"><h2>Inference usage</h2></div>' +
+        pairedMetrics({
+          actions:{baseline:baselineMean.actions,candidate:candidateMean.actions},
+          turns:{baseline:baselineMean.turns,candidate:candidateMean.turns},
+          tokens:{baseline:baselineMean.total_tokens,candidate:candidateMean.total_tokens},
+          tokensAction:{baseline:baselineMean.tokens_per_action,candidate:candidateMean.tokens_per_action},
+          tokensTurn:{baseline:baselineMean.tokens_per_turn,candidate:candidateMean.tokens_per_turn},
+        }, [
+          {key:"actions",label:"Actions",digits:1},
+          {key:"turns",label:"Turns",digits:1},
+          {key:"tokens",label:"Total tokens",digits:0},
+          {key:"tokensAction",label:"Tokens / action",digits:0},
+          {key:"tokensTurn",label:"Tokens / turn",digits:0},
+        ]) + '</section><section class="panel"><div class="head"><h2>Serving behavior</h2></div>' +
+        pairedMetrics(serverMetrics, [
+          {key:"prompt",label:"Prompt throughput / tok/s",digits:0},
+          {key:"generation",label:"Generation throughput / tok/s",digits:1},
+          {key:"prefix",label:"Prefix cache hit / %",digits:1},
+          {key:"kv",label:"GPU KV cache use / %",digits:1},
+        ]) + '</section></div>' +
+
+        '<details class="panel"><summary>All scored runs (' +
+        (registry.run_order?.length || Object.keys(registry.runs).length) +
+        ')</summary><div class="catalog"><table><thead><tr><th>Run</th><th>Selected as</th>' +
+        '<th>Score</th><th>Mean actions</th><th>Mean turns</th><th>Mean tokens</th></tr></thead>' +
+        '<tbody>' + renderCatalog() + '</tbody></table></div></details></div>';
+
+      document.querySelectorAll(".metric-tab").forEach((button) => {
+        button.addEventListener("click", () => {
+          gameMetric = button.dataset.metric;
+          renderGameChart(games);
+        });
+      });
+      renderGameChart(games);
+    }
+
+    function populateSelectors() {
+      const order = registry.run_order || Object.keys(registry.runs);
+      if (order.length < 2) {
+        throw new Error("At least two scored runs are required for comparison.");
+      }
+      baselineId = order[order.length - 2];
+      candidateId = order[order.length - 1];
+      const options = order.map((runId) =>
+        '<option value="' + escapeHtml(runId) + '">' + escapeHtml(runLabel(runId)) + '</option>'
+      ).join("");
+      const baselineSelect = document.getElementById("baseline-select");
+      const candidateSelect = document.getElementById("candidate-select");
+      baselineSelect.innerHTML = options;
+      candidateSelect.innerHTML = options;
+      baselineSelect.value = baselineId;
+      candidateSelect.value = candidateId;
+      baselineSelect.addEventListener("change", () => {
+        const previousBaseline = baselineId;
+        baselineId = baselineSelect.value;
+        if (baselineId === candidateId) {
+          candidateId = previousBaseline;
+          candidateSelect.value = candidateId;
+        }
+        render();
+      });
+      candidateSelect.addEventListener("change", () => {
+        const previousCandidate = candidateId;
+        candidateId = candidateSelect.value;
+        if (candidateId === baselineId) {
+          baselineId = previousCandidate;
+          baselineSelect.value = baselineId;
+        }
+        render();
+      });
+      document.getElementById("swap-button").addEventListener("click", () => {
+        [baselineId, candidateId] = [candidateId, baselineId];
+        baselineSelect.value = baselineId;
+        candidateSelect.value = candidateId;
+        render();
+      });
+      document.getElementById("selectors").hidden = false;
+    }
+
+    fetch("/api/comparison", { cache:"no-store" })
+      .then((response) => response.json().then((body) => {
+        if (!response.ok) throw new Error(body.error || "Failed to load score registry.");
+        return body;
+      }))
+      .then((body) => {
+        if (body.version !== 2 || !body.runs) {
+          throw new Error("Comparison registry must be regenerated in version-2 format.");
+        }
+        registry = body;
+        populateSelectors();
+        render();
+      })
+      .catch((error) => {
+        document.getElementById("dashboard").textContent = error.message;
+      });
+  </script>
+</body>
+</html>

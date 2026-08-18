@@ -28,16 +28,25 @@ class _ResponseBody:
 def _index_html_path() -> Path:
     return Path(__file__).resolve().parent / "index.html"
 
-def _index_html_path() -> Path:
-    return Path(__file__).resolve().parent / "index.html"
+
+def _comparison_html_path() -> Path:
+    return Path(__file__).resolve().parent / "comparison.html"
+
+
+def _comparison_json_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "inference_score_comparison.json"
 
 
 def _load_index_html() -> str:
     return _index_html_path().read_text(encoding="utf-8")
 
 
+def _load_comparison_html() -> str:
+    return _comparison_html_path().read_text(encoding="utf-8")
+
+
 def _index_html_version() -> int:
-    return _index_html_path().stat().st_mtime_ns
+    return max(_index_html_path().stat().st_mtime_ns, _comparison_html_path().stat().st_mtime_ns)
 
 
 def _requested_run_dir(*, runs_dir: Path, default_run_dir: Path | None, requested_run: str | None) -> Path | None:
@@ -69,11 +78,17 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         if parsed.path in {"/", "/index.html"}:
             self._send_html(_load_index_html())
             return
+        if parsed.path in {"/comparison", "/comparison.html"}:
+            self._send_html(_load_comparison_html())
+            return
         if parsed.path == "/api/viewer-version":
             self._send_json({"version": _index_html_version()})
             return
         if parsed.path == "/api/run":
             self._handle_run_api(parsed.query)
+            return
+        if parsed.path == "/api/comparison":
+            self._handle_comparison_api()
             return
         if parsed.path == "/api/game":
             self._handle_game_api(parsed.query)
@@ -85,6 +100,18 @@ class _ViewerHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args) -> None:
         log.info("%s - %s", self.address_string(), fmt % args)
+
+    def _handle_comparison_api(self) -> None:
+        path = _comparison_json_path()
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            self._send_json({"error": f"Comparison data not found: {path}"}, status=HTTPStatus.NOT_FOUND)
+            return
+        except json.JSONDecodeError as exc:
+            self._send_json({"error": f"Invalid comparison JSON: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._send_json(payload)
 
     def _handle_run_api(self, query: str) -> None:
         params = parse_qs(query)
