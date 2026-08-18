@@ -19,8 +19,10 @@ _KNOWN_SECTION_LABELS = {
     "ASSISTANT",
     "ACTION_RESPONSE",
     "ANALYZER STATUS",
+    "LEVEL REVIEW",
     "MODEL CONTEXT",
     "MODEL RESPONSE META",
+    "NEXT LEVEL INITIALIZATION",
     "OUTPUT",
     "PROMPT LOG SNAPSHOT",
     "SYSTEM PROMPT",
@@ -1182,7 +1184,13 @@ def _is_known_section_label(label: str) -> bool:
 
 
 def _classify_section(label: str) -> str:
-    if label in {"ASSISTANT", "OUTPUT", "THINKING"}:
+    if label in {
+        "ASSISTANT",
+        "LEVEL REVIEW",
+        "NEXT LEVEL INITIALIZATION",
+        "OUTPUT",
+        "THINKING",
+    }:
         return "reasoning"
     if label.startswith("TOOL CALL") or label.startswith("TOOL RESULT") or label.startswith("ERROR"):
         return "tool"

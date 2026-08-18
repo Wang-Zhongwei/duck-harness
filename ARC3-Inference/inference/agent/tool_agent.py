@@ -392,6 +392,20 @@ class _ToolDispatchResult:
     step_executed: bool = False
 
 
+@dataclass
+class _PendingLevelTransition:
+    completed_frame: Frame
+    completed_history: list[HistoryEntry]
+    winning_result: dict[str, Any]
+    completed_level_models: dict[str, str]
+    phase: str = "review"
+    initialization_models: dict[str, str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.initialization_models is None:
+            self.initialization_models = {}
+
+
 @dataclass(frozen=True)
 class _AsciiFrameView:
     ascii: str
@@ -967,6 +981,7 @@ class ToolAgent:
         self._last_step_summary: dict[str, Any] | None = None
         self._last_action_result: dict[str, Any] | None = None
         self._summarized_knowledge = _empty_world_model()
+        self._pending_level_transition: _PendingLevelTransition | None = None
 
     def _headers(self) -> dict[str, str]:
         api_key = (
@@ -994,6 +1009,7 @@ class ToolAgent:
             self._last_step_summary = None
             self._last_action_result = None
             self._summarized_knowledge = _empty_world_model()
+            self._pending_level_transition = None
 
     @property
     def total_tokens(self) -> int:
@@ -1168,6 +1184,196 @@ class ToolAgent:
                 image_part,
             ],
         }
+
+    def _capture_level_transition(
+        self,
+        *,
+        fallback_frame: Frame | None,
+        history_entries: list[HistoryEntry],
+        winning_result: dict[str, Any],
+    ) -> None:
+        if not winning_result.get("level_completed") or winning_result.get("run_complete"):
+            return
+        completed_frame = history_entries[-2].frame if len(history_entries) >= 2 else fallback_frame
+        if completed_frame is None:
+            return
+        completed_history = list(history_entries[:-1]) if history_entries else []
+        if not completed_history or completed_history[-1].frame != completed_frame:
+            completed_history.append(HistoryEntry(action="", frame=completed_frame))
+        self._pending_level_transition = _PendingLevelTransition(
+            completed_frame=completed_frame,
+            completed_history=completed_history,
+            winning_result=json.loads(json.dumps(winning_result)),
+            completed_level_models=dict(self._summarized_knowledge),
+        )
+
+    def _level_review_prompt(self, pending: _PendingLevelTransition) -> str:
+        models = pending.completed_level_models
+        winning_actions = pending.winning_result.get("executed_actions") or [
+            pending.winning_result.get("action_display")
+        ]
+        winning_actions = [str(action) for action in winning_actions if action]
+        return "\n".join(
+            [
+                "The preceding action completed a level. Perform an isolated holistic review of the completed level before seeing the next level.",
+                "The attached image is the last observable frame immediately before the winning action. No next-level frame is present in this request.",
+                f"Winning action(s): {', '.join(winning_actions) or '(unknown)'}.",
+                f"Winning result: {json.dumps(pending.winning_result, ensure_ascii=True, sort_keys=True)}",
+                "Completed-level working models:",
+                f"World model: {models.get('world_model') or '(empty)'}",
+                f"Goal model: {models.get('goal_model') or '(empty)'}",
+                f"Action model: {models.get('action_model') or '(empty)'}",
+                f"Cross-level notes: {models.get('cross_level_notes') or '(empty)'}",
+                "Review the entire trajectory and winning evidence holistically. Return exactly these four labeled fields with substantive values:",
+                "World model:",
+                "Goal model:",
+                "Action model:",
+                "Cross-level notes:",
+                "Revise rather than merely repeat the models. Cross-level notes replace the old notes and must be compact. Retain only transferable mechanics, invariants, goal patterns, and uncertainties; omit coordinates and level-specific layout.",
+                "Do not call tools and do not speculate about the unseen next level.",
+            ]
+        )
+
+    def _next_level_initialization_prompt(
+        self,
+        *,
+        current_frame: Frame | None,
+        valid_actions: list[str] | None,
+    ) -> str:
+        new_level = current_frame.level if current_frame is not None else "unknown"
+        cross_level_notes = self._summarized_knowledge.get("cross_level_notes", "")
+        return "\n".join(
+            [
+                f"The completed-level review succeeded. This is the first exposure to level {new_level}.",
+                "The attached image and `current_frame` are the actual new-level state.",
+                f"Valid actions right now: {_format_valid_action_line(valid_actions)}.",
+                f"Transferable cross-level notes: {cross_level_notes or '(none)'}",
+                "Identify visual correspondences with the reviewed mechanics and important differences in this new scene.",
+                "Use inspection-only Python calls as needed. You may inspect `current_frame`, `history`, and `valid_actions`, but `action(...)` is blocked until initialization is complete.",
+                "Before any environment action, emit substantive fresh entries for all three labels:",
+                "World model:",
+                "Goal model:",
+                "Action model:",
+                "These must describe the new level, not the completed level. Once all three have been emitted, normal observe-plan-act behavior resumes and `action(...)` becomes available.",
+                TOOL_CALL_FORMAT_GUIDANCE,
+            ]
+        )
+
+    def _record_next_level_models(self, content: str) -> bool:
+        pending = self._pending_level_transition
+        if pending is None or pending.phase != "initialization":
+            return True
+        note = _extract_scientist_note(content)
+        initialization_models = pending.initialization_models
+        assert initialization_models is not None
+        for key in ("world_model", "goal_model", "action_model"):
+            value = note.get(key, "")
+            if value:
+                initialization_models[key] = value
+                self._summarized_knowledge[key] = value
+        if not all(
+            initialization_models.get(key)
+            for key in ("world_model", "goal_model", "action_model")
+        ):
+            return False
+        self._pending_level_transition = None
+        return True
+
+    def _complete_level_review(
+        self,
+        pending: _PendingLevelTransition,
+        *,
+        append_transcript: Callable[[str, str], None],
+        request_timeout_seconds: float | None,
+    ) -> tuple[bool, str]:
+        review_system_prompt = (
+            "You are reviewing a just-completed grid-puzzle level in isolation. "
+            "Use only the supplied text and attached completed-level frame. "
+            "Do not call tools. Do not infer or describe the unseen next level."
+        )
+        review_prompt = self._level_review_prompt(pending)
+        messages = [
+            {"role": "system", "content": review_system_prompt},
+            self._build_user_message(review_prompt, pending.completed_frame),
+        ]
+        captured_reasoning = ""
+        for attempt in range(2):
+            result = self._chat_completion(
+                messages,
+                tools=None,
+                request_timeout_seconds=request_timeout_seconds,
+            )
+            self._accumulate_usage_tokens(result.usage)
+            raw_reasoning = _extract_reasoning_text(result.message)
+            raw_content = _normalize_message_content(result.message.get("content", ""))
+            tool_calls = json.loads(json.dumps(result.message.get("tool_calls") or []))
+            tool_call_markup_in_text = _contains_tool_call_markup(raw_reasoning, raw_content)
+            reasoning = (
+                _strip_tool_call_markup(raw_reasoning)
+                if tool_call_markup_in_text
+                else raw_reasoning
+            )
+            content = (
+                _strip_tool_call_markup(raw_content)
+                if tool_call_markup_in_text
+                else raw_content
+            )
+            append_transcript(
+                "MODEL RESPONSE META",
+                _format_model_response_meta(
+                    finish_reason=result.finish_reason,
+                    reasoning=reasoning,
+                    content=content,
+                    tool_calls=tool_calls,
+                    tool_call_markup_in_text=tool_call_markup_in_text,
+                    recovered_tool_calls_from_markup=False,
+                    malformed_argument_errors=[],
+                ),
+            )
+            if reasoning:
+                captured_reasoning = reasoning
+                append_transcript("THINKING", reasoning)
+            if content:
+                append_transcript("LEVEL REVIEW", content)
+            review = _extract_scientist_note(content)
+            required_keys = (
+                "world_model",
+                "goal_model",
+                "action_model",
+                "cross_level_notes",
+            )
+            if not tool_calls and all(review.get(key) for key in required_keys):
+                retained = _empty_world_model()
+                retained["cross_level_notes"] = review["cross_level_notes"]
+                self._summarized_knowledge = retained
+                pending.phase = "initialization"
+                self._history_messages = []
+                return True, captured_reasoning
+            if attempt == 0:
+                missing = [
+                    label
+                    for key, label in (
+                        ("world_model", "World model"),
+                        ("goal_model", "Goal model"),
+                        ("action_model", "Action model"),
+                        ("cross_level_notes", "Cross-level notes"),
+                    )
+                    if not review.get(key)
+                ]
+                correction = (
+                    "Format correction required. Return only the four substantive labeled fields "
+                    "`World model:`, `Goal model:`, `Action model:`, and "
+                    "`Cross-level notes:`. "
+                    f"Missing or empty: {', '.join(missing) or 'none; remove tool calls'}."
+                )
+                append_transcript("USER PROMPT", correction)
+                messages.extend(
+                    [
+                        {"role": "assistant", "content": content or None},
+                        {"role": "user", "content": correction},
+                    ]
+                )
+        return False, captured_reasoning
 
 
     def _build_user_prompt(
@@ -1481,6 +1687,11 @@ class ToolAgent:
             last_action_result: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
             refreshed_frame, refreshed_history = load_runtime_state(state_path)
+            pending_transition = self._pending_level_transition
+            if pending_transition is not None and pending_transition.phase == "review":
+                refreshed_frame = pending_transition.completed_frame
+                refreshed_history = pending_transition.completed_history
+                next_valid_actions = []
             current_frame_payload = _ascii_frame_view_payload(refreshed_frame)
             if isinstance(next_valid_actions, list):
                 sanitized_actions = [str(item).strip() for item in next_valid_actions if str(item).strip()]
@@ -1506,6 +1717,26 @@ class ToolAgent:
 
         def _handle_action(actions: list[dict[str, Any]]) -> dict[str, Any]:
             nonlocal terminal_action_result
+            pending_transition = self._pending_level_transition
+            if pending_transition is not None and pending_transition.phase == "initialization":
+                missing = [
+                    label
+                    for key, label in (
+                        ("world_model", "World model"),
+                        ("goal_model", "Goal model"),
+                        ("action_model", "Action model"),
+                    )
+                    if not (pending_transition.initialization_models or {}).get(key)
+                ]
+                blocked_payload = {
+                    "executed": False,
+                    "error": "Environment actions are blocked during next-level initialization.",
+                    "missing_models": missing,
+                }
+                return {
+                    "action_result": blocked_payload,
+                    "state": _serialized_runtime_state(last_action_result=blocked_payload),
+                }
             if self._step_env_callback is None:
                 raise RuntimeError("action(actions) is not available in this session.")
             normalized_actions = self._normalize_python_actions(actions)
@@ -1542,6 +1773,13 @@ class ToolAgent:
             if not isinstance(raw_payload, dict):
                 raise RuntimeError("action(actions) did not return a JSON-like payload.")
             compact_payload = self._compact_action_result(raw_payload)
+            if compact_payload.get("level_completed") and not compact_payload.get("run_complete"):
+                _, refreshed_history = load_runtime_state(state_path)
+                self._capture_level_transition(
+                    fallback_frame=current_frame,
+                    history_entries=refreshed_history,
+                    winning_result=compact_payload,
+                )
             next_valid_actions = raw_payload.get("valid_actions")
             if isinstance(next_valid_actions, list):
                 self._current_valid_actions = _normalize_valid_actions(next_valid_actions)
@@ -1736,13 +1974,6 @@ class ToolAgent:
         analyzer_log = transcript_path or (state_path.parent / f"{state_path.stem}_analyzer.txt")
         prompt_log = _resolve_prompt_log_path(state_path)
         current_frame, history_entries = load_runtime_state(state_path)
-        user_prompt = self._build_user_prompt(
-            action_num,
-            valid_actions=valid_actions,
-            current_frame=current_frame,
-            history_entries=history_entries,
-            previous_step_summary=self._last_step_summary,
-        )
         display_action_num = _display_action_number(action_num)
 
         with open(analyzer_log, "a", encoding="utf-8") as f:
@@ -1760,6 +1991,58 @@ class ToolAgent:
             if transcript_updated is not None:
                 transcript_updated("".join(transcript_parts))
 
+        captured_reasoning = ""
+        pending_transition = self._pending_level_transition
+        if pending_transition is not None and pending_transition.phase == "review":
+            review_system_prompt = (
+                "You are reviewing a just-completed grid-puzzle level in isolation. "
+                "No tools or next-level state are available."
+            )
+            append_transcript("SYSTEM PROMPT", review_system_prompt)
+            append_transcript("USER PROMPT", self._level_review_prompt(pending_transition))
+            try:
+                review_succeeded, review_reasoning = self._complete_level_review(
+                    pending_transition,
+                    append_transcript=append_transcript,
+                    request_timeout_seconds=request_timeout_seconds,
+                )
+                captured_reasoning = review_reasoning
+            except requests.RequestException as exc:
+                append_transcript("ANALYZER STATUS", f"level_review_request_error: {exc}")
+                self._step_env_callback = None
+                self._current_valid_actions = []
+                return AnalyzerTurnResult(
+                    step_executed=False,
+                    retryable_failure=True,
+                    reasoning=captured_reasoning,
+                )
+            if not review_succeeded:
+                append_transcript(
+                    "ANALYZER STATUS",
+                    "level_review_format_error: required fields remained missing after one correction; retrying before gameplay.",
+                )
+                self._step_env_callback = None
+                self._current_valid_actions = []
+                return AnalyzerTurnResult(
+                    step_executed=False,
+                    retryable_failure=True,
+                    reasoning=captured_reasoning,
+                )
+
+        pending_transition = self._pending_level_transition
+        if pending_transition is not None and pending_transition.phase == "initialization":
+            user_prompt = self._next_level_initialization_prompt(
+                current_frame=current_frame,
+                valid_actions=valid_actions,
+            )
+        else:
+            user_prompt = self._build_user_prompt(
+                action_num,
+                valid_actions=valid_actions,
+                current_frame=current_frame,
+                history_entries=history_entries,
+                previous_step_summary=self._last_step_summary,
+            )
         append_transcript("SYSTEM PROMPT", self._system_prompt)
         append_transcript("USER PROMPT", user_prompt)
 
@@ -1771,7 +2054,6 @@ class ToolAgent:
             preserve_recent=1,
         )
         step_executed = False
-        captured_reasoning = ""
         latest_request_messages: list[dict[str, Any]] | None = None
         latest_request_tools: list[dict[str, Any]] | None = None
         latest_request_tool_choice: str | None = None
@@ -1904,9 +2186,17 @@ class ToolAgent:
                     assistant_message["reasoning"] = reasoning
 
                 if not tool_calls:
+                    initialization_response = bool(
+                        self._pending_level_transition is not None
+                        and self._pending_level_transition.phase == "initialization"
+                    )
                     if content:
-                        self._update_summarized_knowledge_from_assistant(content)
-                        append_transcript("ASSISTANT", content)
+                        if initialization_response:
+                            self._record_next_level_models(content)
+                        else:
+                            self._update_summarized_knowledge_from_assistant(content)
+                        label = "NEXT LEVEL INITIALIZATION" if initialization_response else "ASSISTANT"
+                        append_transcript(label, content)
                         assistant_message["content"] = content
                     elif reasoning:
                         assistant_message["content"] = None
@@ -1916,6 +2206,28 @@ class ToolAgent:
                     yielded_control_reason = control_yield_reason()
                     if yielded_control_reason is not None:
                         break
+                    pending_initialization = self._pending_level_transition
+                    if (
+                        pending_initialization is not None
+                        and pending_initialization.phase == "initialization"
+                    ):
+                        missing = [
+                            label
+                            for key, label in (
+                                ("world_model", "World model"),
+                                ("goal_model", "Goal model"),
+                                ("action_model", "Action model"),
+                            )
+                            if not (pending_initialization.initialization_models or {}).get(key)
+                        ]
+                        followup_prompt = (
+                            "Next-level initialization is incomplete. Inspection-only Python is available, "
+                            "but environment actions remain blocked. Emit fresh substantive entries for: "
+                            f"{', '.join(missing)}."
+                        )
+                        append_transcript("USER PROMPT", followup_prompt)
+                        messages.append({"role": "user", "content": followup_prompt})
+                        continue
                     followup_prefix = "You have not acted yet. Investigate first. "
                     if tool_call_markup_in_text:
                         followup_prefix = (
@@ -1938,9 +2250,17 @@ class ToolAgent:
                     messages.append({"role": "user", "content": followup_prompt})
                     continue
 
+                initialization_response = bool(
+                    self._pending_level_transition is not None
+                    and self._pending_level_transition.phase == "initialization"
+                )
                 if content:
-                    self._update_summarized_knowledge_from_assistant(content)
-                    append_transcript("ASSISTANT", content)
+                    if initialization_response:
+                        self._record_next_level_models(content)
+                    else:
+                        self._update_summarized_knowledge_from_assistant(content)
+                    label = "NEXT LEVEL INITIALIZATION" if initialization_response else "ASSISTANT"
+                    append_transcript(label, content)
                     assistant_message["content"] = content
                 assistant_message["tool_calls"] = tool_calls
                 messages.append(assistant_message)
