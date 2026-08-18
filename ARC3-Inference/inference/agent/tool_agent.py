@@ -222,8 +222,22 @@ def _extract_labeled_blocks(content: str, labels: list[str]) -> dict[str, str]:
     label_pattern = "|".join(
         re.escape(label) for label in sorted(labels, key=len, reverse=True)
     )
+    leading_qualifier_pattern = (
+        r"(?:the|revised|updated|new|final|initial|current|working|refined|"
+        r"corrected|confirmed|carried-over|probe|batched|best|failed|fix|"
+        r"reworked|standing|optimal|operational|structural|objective|rule|"
+        r"motion|movement|accurate|my|placement|big)\s+|"
+        r"(?:new\s+(?:cycle|probe|run)|next(?:-run|\s+run)?|"
+        r"level\s*\d+|l\d+)\s+|"
+        r"(?:revising|updating|refining|fixing|correcting|confirming)"
+        r"\s+(?:the\s+)?|"
+        r"(?:revision|update|refinement|correction)\s+(?:to|of)"
+        r"\s+(?:the\s+)?|"
+        r"postmortem\s*/\s*|l\d+\s+inventory\s+\(\s*"
+    )
     header_pattern = re.compile(
-        rf"^(?P<label>{label_pattern})(?:\*\*)?(?:\s+[^:\n]{{1,80}})?:",
+        rf"^(?:{leading_qualifier_pattern})*"
+        rf"(?P<label>{label_pattern})(?:\*\*)?(?:\s+[^:\n]{{1,160}})?:",
         flags=re.IGNORECASE,
     )
     extracted: dict[str, list[str]] = {label: [] for label in labels}
