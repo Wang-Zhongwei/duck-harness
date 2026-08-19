@@ -33,8 +33,8 @@ def _comparison_html_path() -> Path:
     return Path(__file__).resolve().parent / "comparison.html"
 
 
-def _comparison_json_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "inference_score_comparison.json"
+def _comparison_json_path(runs_dir: Path) -> Path:
+    return runs_dir / "inference_score_comparison.json"
 
 
 def _load_index_html() -> str:
@@ -102,7 +102,7 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         log.info("%s - %s", self.address_string(), fmt % args)
 
     def _handle_comparison_api(self) -> None:
-        path = _comparison_json_path()
+        path = _comparison_json_path(self.runs_dir)
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:

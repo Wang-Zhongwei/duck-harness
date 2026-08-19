@@ -297,6 +297,10 @@ Start the viewer on the default port from `configs/inference.json`:
 make view
 ```
 
+When browsing a run root, the viewer defaults to the newest run dated on or
+after 2026-08-10 that contains viewer artifacts. The run selector uses the same
+Qwen 3.8-era filter. `VIEW_RUN_DIR` remains available as an explicit override.
+
 Override the port:
 
 ```bash
@@ -343,9 +347,47 @@ present, and otherwise asks TAAF's `GameRun` scorer to compute the score from
 the saved state. It writes `evaluation.json` plus the lightweight `score.json`
 format used by significance checks.
 
-Each single-run scoring also upserts the complete score payload into
-`inference_score_comparison.json`. The viewer uses this versioned registry to
-compare any two scored runs without regenerating pair-specific files.
+Each single-run scoring also upserts the complete payload as that run's
+`public` score in `runs/inference_score_comparison.json`. The versioned
+registry keeps only Qwen 3.8-era runs dated on or after 2026-08-10 and lets the
+viewer compare any two scored runs without regenerating pair-specific files.
+
+Pull completed Kaggle leaderboard scores into the append-only `semi_private`
+collection:
+
+```bash
+make pull_semi_private_score
+```
+
+The command reads the authenticated
+`arc-prize-2026-arc-agi-3` submission feed, ignores submissions before
+2026-08-10, and appends only previously unseen submission refs. Kaggle calls
+this value `publicScore`; the viewer labels it **Semi-private set** because it
+comes from the competition's hidden scoring split. Each new registry item has
+an empty `local_run_path` for manual linking:
+
+```json
+{
+  "local_run_path": "",
+  "score_path": "semi_private_scores/kaggle-55602997.json"
+}
+```
+
+Set `local_run_path` to the corresponding local run directory, for example
+`runs/20260818_195342_q38-xhigh-ctx32768-mml65536-mtp2-25games-2gpu`.
+Repeated pulls preserve prior items and manual links. To import a standalone
+remote JSON instead, set `SEMI_PRIVATE_SCORE_SOURCE` to a local path, HTTPS
+URL, or `user@host:/path/score.json`.
+
+Refresh the current ARC Prize featured-model public frontier snapshot with:
+
+```bash
+make refresh_frontier_scores
+```
+
+The comparison viewer ranks the selected candidate's per-game public-score gap
+against the best latest verified featured-model result, and links every game
+directly to `https://arcprize.org/tasks/<game-id>`.
 
 ## Significance
 

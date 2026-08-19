@@ -42,6 +42,8 @@ inference-view = "viewer.server:main"
 inference-eval = "inference.tools.eval:main"
 inference-eval-plot = "inference.tools.eval_plot:main"
 inference-significance = "inference.tools.significance:main"
+inference-pull-semi-private-score = "inference.tools.pull_semi_private_score:main"
+inference-refresh-frontier-scores = "inference.tools.frontier_scores:main"
 inference-traces = "inference.tools.traces:main"
 
 [tool.setuptools.packages.find]

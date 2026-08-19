@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>ARC3 Inference vs Score</title>
+  <title>ARC3 Inference and Score Comparison</title>
   <style>
     :root {
       --bg:#f5f1e8; --panel:#fffaf1; --ink:#18242d; --muted:#6f7f88;
-      --line:#d8cdbb; --accent:#c55d1f; --base:#647985;
+      --line:#d8cdbb; --accent:#c55d1f; --base:#647985; --frontier:#7456a4;
       --good:#25705a; --bad:#a34135; --shadow:0 18px 45px #18242d14;
     }
     * { box-sizing:border-box; }
@@ -26,6 +26,7 @@
     h1 { margin-bottom:4px; font-size:clamp(1.5rem,3vw,2.3rem); letter-spacing:-.04em; }
     h2 { margin-bottom:4px; font-size:1rem; text-transform:uppercase; letter-spacing:.08em; }
     h3 { margin-bottom:4px; font-size:.92rem; }
+    a { color:inherit; }
     .muted,.note { color:var(--muted); }
     .back,.pill,select {
       border:1px solid var(--line); border-radius:999px; background:#fff; color:var(--ink);
@@ -33,18 +34,18 @@
     }
     .back { text-decoration:none; font-weight:700; white-space:nowrap; }
     .selectors {
-      display:grid; grid-template-columns:minmax(180px,1fr) auto minmax(180px,1fr);
+      display:grid; grid-template-columns:minmax(180px,1fr) auto minmax(180px,1fr) minmax(145px,.55fr);
       gap:10px; align-items:end;
     }
     .select-wrap { display:grid; gap:5px; }
     .select-wrap label { color:var(--muted); font-size:.7rem; font-weight:700; text-transform:uppercase; letter-spacing:.08em; }
     select { width:100%; min-width:0; }
     .pill { cursor:pointer; font-weight:700; }
-    .hero { display:grid; grid-template-columns:minmax(270px,.9fr) minmax(0,2.1fr); gap:14px; }
+    .hero { display:grid; grid-template-columns:minmax(290px,.9fr) minmax(0,2.1fr); gap:14px; }
     .score {
       padding:22px; border-radius:18px; color:#fff;
       background:linear-gradient(140deg,#21313a,#17232b); display:grid; align-content:center;
-      min-height:220px;
+      min-height:240px;
     }
     .eyebrow { text-transform:uppercase; letter-spacing:.1em; font-size:.7rem; font-weight:700; opacity:.7; }
     .score-line { display:flex; align-items:baseline; gap:12px; margin:12px 0 8px; }
@@ -55,8 +56,11 @@
       margin-top:16px; padding-top:14px; border-top:1px solid #ffffff26;
       display:grid; gap:5px; font:11px/1.5 monospace; overflow-wrap:anywhere;
     }
-    .kpis { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
-    .kpi { padding:15px; border-radius:15px; background:var(--panel); border:1px solid #18242d14; }
+    .kpis,.score-sources { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+    .kpi,.source-card { padding:15px; border-radius:15px; background:var(--panel); border:1px solid #18242d14; }
+    .source-card.active { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
+    .source-values { display:flex; align-items:baseline; gap:8px; margin-top:9px; }
+    .source-values strong { font-size:1.55rem; }
     .label { color:var(--muted); font-size:.7rem; text-transform:uppercase; letter-spacing:.09em; font-weight:700; }
     .value { margin-top:8px; font-size:1.5rem; font-weight:800; }
     .change { margin-top:4px; font-size:.82rem; font-weight:700; }
@@ -71,29 +75,47 @@
       padding:7px 11px; cursor:pointer; font:inherit; font-size:.78rem;
     }
     .metric-tab.active { border-color:var(--accent); background:#f7dcc6; font-weight:700; }
-    .game-chart {
-      display:grid; gap:5px; max-height:680px; overflow:auto; padding-right:4px;
-    }
+    .game-chart,.opportunity-chart { display:grid; gap:5px; padding-right:4px; }
+    .game-chart { max-height:680px; overflow:auto; }
     .game-row {
       display:grid; grid-template-columns:145px 80px minmax(180px,1fr) 80px;
       gap:9px; align-items:center; min-height:29px; font-size:.78rem;
     }
     .game-id { overflow:hidden; text-overflow:ellipsis; font-family:monospace; font-weight:700; }
+    a.game-id {
+      text-decoration-line:underline; text-decoration-color:currentColor;
+      text-decoration-thickness:1px; text-underline-offset:3px;
+    }
+    a.game-id:hover { color:var(--accent); text-decoration-thickness:2px; }
     .game-value { color:var(--muted); font-variant-numeric:tabular-nums; }
+    .game-sort {
+      appearance:none; border:0; padding:2px 0; background:transparent; color:inherit;
+      cursor:pointer; display:flex; gap:5px; align-items:center; font:inherit; font-weight:700;
+    }
+    .game-sort:hover { color:var(--ink); text-decoration:underline; text-underline-offset:3px; }
+    .game-sort.active { color:var(--ink); }
+    .game-sort.center { justify-content:center; }
+    .game-sort.right { justify-content:flex-end; }
+    .sort-indicator { display:inline-block; min-width:1em; font-size:.68rem; text-align:center; }
     .game-value:last-child { text-align:right; }
-    .delta-track {
-      position:relative; height:18px; border-radius:5px; background:#18242d08;
-    }
-    .delta-track::after {
-      content:""; position:absolute; top:0; bottom:0; left:50%; width:1px; background:#18242d2e;
-    }
-    .delta-bar { position:absolute; top:3px; bottom:3px; border-radius:4px; min-width:1px; }
+    .delta-track,.room-track { position:relative; height:18px; border-radius:5px; background:#18242d08; }
+    .delta-track::after { content:""; position:absolute; top:0; bottom:0; left:50%; width:1px; background:#18242d2e; }
+    .delta-bar,.room-bar { position:absolute; top:3px; bottom:3px; border-radius:4px; min-width:1px; }
     .delta-bar.positive { left:50%; background:var(--good); }
     .delta-bar.negative { right:50%; background:var(--bad); }
-    .delta-label {
+    .delta-label,.room-label {
       position:absolute; inset:0; display:grid; place-items:center;
       font-size:.68rem; font-weight:800; z-index:1;
     }
+    .opportunity-row {
+      display:grid; grid-template-columns:120px 72px 72px minmax(180px,1fr) 180px;
+      gap:9px; align-items:center; min-height:31px; font-size:.78rem;
+    }
+    .room-bar { left:0; background:var(--frontier); }
+    .frontier-model { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }
+    .frontier-controls { display:flex; align-items:end; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
+    .frontier-select { min-width:min(310px,70vw); }
+    .frontier-controls > a { padding-bottom:9px; white-space:nowrap; }
     .grid2 { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
     .metrics { display:grid; gap:14px; }
     .metric { display:grid; gap:6px; }
@@ -108,6 +130,7 @@
     .eff-values { display:flex; justify-content:space-between; margin-top:10px; gap:12px; }
     .eff-values div { display:grid; gap:3px; }
     .eff-values span { color:var(--muted); font-size:.67rem; text-transform:uppercase; }
+    .notice { border-left:4px solid var(--accent); }
     details.panel { padding:0; }
     summary { cursor:pointer; padding:18px; font-weight:700; list-style:none; }
     summary::-webkit-details-marker { display:none; }
@@ -120,16 +143,21 @@
     th:first-child,td:first-child { text-align:left; }
     .catalog-run { font-family:monospace; font-weight:700; }
     .empty { text-align:center; padding:40px; color:var(--muted); }
-    @media(max-width:900px) {
-      .top { align-items:flex-start; flex-direction:column; }
+    @media(max-width:1000px) {
+      .selectors { grid-template-columns:1fr auto 1fr; }
+      .selectors .score-set-wrap { grid-column:1/-1; }
       .hero,.grid2 { grid-template-columns:1fr; }
-      .outcomes,.efficiency { grid-template-columns:repeat(2,1fr); }
+      .opportunity-row { grid-template-columns:105px 60px 60px minmax(130px,1fr); }
+      .opportunity-row .frontier-model { display:none; }
     }
     @media(max-width:600px) {
       body { padding:8px; }
+      .top { align-items:flex-start; flex-direction:column; }
       .selectors { grid-template-columns:1fr; width:100%; }
-      .kpis,.outcomes,.efficiency { grid-template-columns:1fr; }
-      .game-row { grid-template-columns:105px 62px minmax(120px,1fr) 62px; }
+      .selectors .score-set-wrap { grid-column:auto; }
+      .kpis,.score-sources,.outcomes,.efficiency { grid-template-columns:1fr; }
+      .game-row { grid-template-columns:105px 62px minmax(110px,1fr) 62px; }
+      .opportunity-row { grid-template-columns:80px 55px 55px minmax(90px,1fr); }
     }
   </style>
 </head>
@@ -137,7 +165,7 @@
   <main>
     <header class="top">
       <div>
-        <h1>Inference vs Score</h1>
+        <h1>Inference and Score Comparison</h1>
         <div class="muted" id="subtitle">Loading scored runs...</div>
       </div>
       <a class="back" href="/">Back to viewer</a>
@@ -153,6 +181,10 @@
         <label for="candidate-select">Candidate run</label>
         <select id="candidate-select"></select>
       </div>
+      <div class="select-wrap score-set-wrap">
+        <label for="score-set-select">Detailed score set</label>
+        <select id="score-set-select"></select>
+      </div>
     </section>
 
     <div id="dashboard" class="panel empty">Loading comparison registry...</div>
@@ -162,7 +194,11 @@
     let registry = null;
     let baselineId = "";
     let candidateId = "";
+    let scoreSet = "public";
     let gameMetric = "score";
+    let frontierReference = "best";
+    let gameSortKey = "delta";
+    let gameSortDirection = "desc";
 
     const metricDefinitions = {
       score: { label: "Score", field: "score", digits: 2 },
@@ -178,6 +214,7 @@
     }
 
     function formatNumber(value, digits) {
+      if (value == null || value === "") return "-";
       const number = Number(value);
       if (!Number.isFinite(number)) return "-";
       const precision = digits == null ? (Math.abs(number) >= 100 ? 0 : 2) : digits;
@@ -187,10 +224,11 @@
       });
     }
 
-    function formatSigned(value, suffix = "", digits = 1) {
+    function formatSigned(value, suffix, digits) {
+      if (value == null || value === "") return "-";
       const number = Number(value);
       if (!Number.isFinite(number)) return "-";
-      return (number > 0 ? "+" : "") + formatNumber(number, digits) + suffix;
+      return (number > 0 ? "+" : "") + formatNumber(number, digits == null ? 1 : digits) + (suffix || "");
     }
 
     function percentChange(baseline, candidate) {
@@ -200,30 +238,68 @@
         : null;
     }
 
-    function runScore(runId) {
-      return registry.runs[runId].score;
+    function localRunId(path) {
+      const parts = String(path || "").split("/").filter(Boolean);
+      if (!parts.length) return "";
+      if (parts[parts.length - 1].endsWith(".json")) parts.pop();
+      return parts.length ? parts[parts.length - 1] : "";
+    }
+
+    function publicScore(runId) {
+      const entry = registry.runs[runId] || {};
+      return entry.scores && entry.scores.public ? entry.scores.public.score : entry.score;
+    }
+
+    function linkedSemiPrivate(runId) {
+      return (registry.semi_private_scores || [])
+        .filter((item) => localRunId(item.local_run_path) === runId)
+        .sort((a, b) => String(a.pulled_at || "").localeCompare(String(b.pulled_at || "")));
+    }
+
+    function semiPrivateScore(runId) {
+      const items = linkedSemiPrivate(runId);
+      return items.length ? items[items.length - 1].score : null;
+    }
+
+    function runScore(runId, requestedSet) {
+      return requestedSet === "semi_private" ? semiPrivateScore(runId) : publicScore(runId);
     }
 
     function runLabel(runId) {
-      const score = runScore(runId);
-      const createdAt = score.metadata?.created_at;
+      const score = publicScore(runId) || semiPrivateScore(runId) || {};
+      const createdAt = score.metadata && score.metadata.created_at;
       return createdAt ? runId + " / " + createdAt.slice(0, 10) : runId;
     }
 
+    function scoreSetLabel(key) {
+      const configured = registry.score_sets && registry.score_sets[key];
+      return configured && configured.label ? configured.label : key;
+    }
+
+    function taskUrl(gameId) {
+      const baseId = String(gameId).split("-")[0];
+      const frontierGame = registry.public_frontier && registry.public_frontier.games
+        ? registry.public_frontier.games[baseId]
+        : null;
+      return frontierGame && frontierGame.task_url
+        ? frontierGame.task_url
+        : "https://arcprize.org/tasks/" + encodeURIComponent(baseId);
+    }
+
     function efficiency(score) {
-      const mean = score.usage?.mean || {};
+      const mean = score && score.usage ? score.usage.mean || {} : {};
       return {
-        tokens: score.score / (mean.total_tokens / 1000000),
-        turns: score.score / (mean.turns / 100),
-        actions: score.score / (mean.actions / 100),
+        tokens: Number(score && score.score) / (Number(mean.total_tokens) / 1000000),
+        turns: Number(score && score.score) / (Number(mean.turns) / 100),
+        actions: Number(score && score.score) / (Number(mean.actions) / 100),
       };
     }
 
     function commonGames(baseline, candidate) {
-      return Object.keys(baseline.games || {})
-        .filter((gameId) => candidate.games?.[gameId])
+      return Object.keys((baseline && baseline.games) || {})
+        .filter((gameId) => candidate && candidate.games && candidate.games[gameId])
         .map((gameId) => ({
-          gameId,
+          gameId: gameId,
           baseline: baseline.games[gameId],
           candidate: candidate.games[gameId],
         }));
@@ -231,18 +307,33 @@
 
     function median(values) {
       if (!values.length) return null;
-      const sorted = [...values].sort((a, b) => a - b);
+      const sorted = values.slice().sort((a, b) => a - b);
       const middle = Math.floor(sorted.length / 2);
       return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
     }
 
-    function metricCard(label, baseline, candidate, lowerIsBetter = true) {
+    function metricCard(label, baseline, candidate, lowerIsBetter) {
       const change = percentChange(baseline, candidate);
-      const good = change == null || change === 0 ? "" : ((lowerIsBetter ? change < 0 : change > 0) ? "good" : "bad");
+      const good = change == null || change === 0 ? "" :
+        (((lowerIsBetter !== false) ? change < 0 : change > 0) ? "good" : "bad");
       return '<article class="kpi"><div class="label">' + escapeHtml(label) + '</div>' +
         '<div class="value">' + formatNumber(candidate) + '</div>' +
         '<div class="change ' + good + '">' + formatSigned(change, "%", 1) +
         ' vs ' + formatNumber(baseline) + '</div></article>';
+    }
+
+    function sourceCard(key, baseline, candidate) {
+      const active = key === scoreSet ? " active" : "";
+      const before = baseline ? baseline.score : null;
+      const after = candidate ? candidate.score : null;
+      const available = before != null && after != null &&
+        Number.isFinite(Number(before)) && Number.isFinite(Number(after));
+      const delta = available ? Number(after) - Number(before) : null;
+      return '<article class="source-card' + active + '"><div class="label">' +
+        escapeHtml(scoreSetLabel(key)) + '</div><div class="source-values"><span>' +
+        formatNumber(before, 2) + '</span><span>to</span><strong>' + formatNumber(after, 2) +
+        '</strong></div><div class="change ' + (delta > 0 ? "good" : delta < 0 ? "bad" : "") + '">' +
+        (available ? formatSigned(delta, "", 2) : "Link both runs to compare") + '</div></article>';
     }
 
     function pairedMetrics(metrics, definitions) {
@@ -272,119 +363,289 @@
         '<div><strong>' + formatNumber(after, 2) + '</strong><span>Candidate</span></div></div></article>';
     }
 
+    function compareGameRows(a, b) {
+      let comparison = 0;
+      if (gameSortKey === "gameId") {
+        comparison = a.gameId.localeCompare(b.gameId, undefined, { numeric:true, sensitivity:"base" });
+      } else {
+        comparison = Number(a[gameSortKey]) - Number(b[gameSortKey]);
+      }
+      if (comparison === 0) {
+        return a.gameId.localeCompare(b.gameId, undefined, { numeric:true, sensitivity:"base" });
+      }
+      return gameSortDirection === "asc" ? comparison : -comparison;
+    }
+
+    function updateGameSortHeaders() {
+      const labels = {
+        gameId:"game ID", baselineValue:"baseline", delta:"candidate minus baseline", candidateValue:"candidate",
+      };
+      document.querySelectorAll(".game-sort").forEach((button) => {
+        const active = button.dataset.gameSort === gameSortKey;
+        const indicator = button.querySelector(".sort-indicator");
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", active ? "true" : "false");
+        button.setAttribute("aria-label", "Sort by " + labels[button.dataset.gameSort] +
+          (active ? ", currently " + (gameSortDirection === "asc" ? "ascending" : "descending") : ""));
+        if (indicator) indicator.textContent = active ? (gameSortDirection === "asc" ? "▲" : "▼") : "↕";
+      });
+    }
+
     function renderGameChart(games) {
+      const target = document.getElementById("game-chart");
+      if (!target) return;
       const definition = metricDefinitions[gameMetric];
       const rows = games.map((game) => {
         const baseline = Number(game.baseline[definition.field]);
         const candidate = Number(game.candidate[definition.field]);
-        return { ...game, baselineValue: baseline, candidateValue: candidate, delta: candidate - baseline };
+        return { gameId:game.gameId, baselineValue:baseline, candidateValue:candidate, delta:candidate - baseline };
       }).filter((row) => Number.isFinite(row.delta))
-        .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+        .sort(compareGameRows);
 
-      const maxDelta = Math.max(...rows.map((row) => Math.abs(row.delta)), 1);
-      document.getElementById("game-chart").innerHTML = rows.map((row) => {
+      const maxDelta = Math.max.apply(null, rows.map((row) => Math.abs(row.delta)).concat([1]));
+      target.innerHTML = rows.length ? rows.map((row) => {
         const width = Math.abs(row.delta) / maxDelta * 49;
         const direction = row.delta >= 0 ? "positive" : "negative";
-        return '<div class="game-row"><span class="game-id" title="' + escapeHtml(row.gameId) + '">' +
-          escapeHtml(row.gameId) + '</span><span class="game-value">' +
+        return '<div class="game-row"><a class="game-id" target="_blank" rel="noopener" href="' +
+          escapeHtml(taskUrl(row.gameId)) + '" title="' + escapeHtml(row.gameId) + '">' +
+          escapeHtml(row.gameId) + '</a><span class="game-value">' +
           formatNumber(row.baselineValue, definition.digits) + '</span><div class="delta-track">' +
           '<span class="delta-bar ' + direction + '" style="width:' + width + '%"></span>' +
           '<span class="delta-label">' + formatSigned(row.delta, "", definition.digits) + '</span></div>' +
           '<span class="game-value">' + formatNumber(row.candidateValue, definition.digits) + '</span></div>';
-      }).join("");
+      }).join("") : '<div class="empty">No common per-game values for this metric.</div>';
 
       document.querySelectorAll(".metric-tab").forEach((button) => {
         button.classList.toggle("active", button.dataset.metric === gameMetric);
       });
+      updateGameSortHeaders();
+    }
+
+    function frontierSection(runId) {
+      const frontier = registry.public_frontier;
+      const candidate = publicScore(runId);
+      if (!frontier || !frontier.games || !candidate || !candidate.games) return "";
+
+      const configOrder = frontier.config_order || Object.keys(frontier.configs || {});
+      const configEntries = configOrder.map((configId) => ({
+        configId:configId, config:(frontier.configs || {})[configId],
+      })).filter((entry) => entry.config);
+      if (frontierReference !== "best" && !configEntries.some((entry) => entry.configId === frontierReference)) {
+        frontierReference = "best";
+      }
+      const selectedConfig = frontierReference === "best"
+        ? null
+        : (frontier.configs || {})[frontierReference];
+      const referenceLabel = selectedConfig ? selectedConfig.display_name : "Best per game (oracle)";
+      const referenceScore = Number(selectedConfig ? selectedConfig.overall_score : frontier.oracle_score);
+      const candidateOverall = Number(candidate.score);
+      const overallGap = Number.isFinite(referenceScore) && Number.isFinite(candidateOverall)
+        ? referenceScore - candidateOverall
+        : null;
+
+      const localByBase = {};
+      Object.entries(candidate.games).forEach(([gameId, value]) => {
+        localByBase[String(gameId).split("-")[0]] = value;
+      });
+      const rows = Object.entries(frontier.games).map(([baseId, game]) => {
+        const local = localByBase[baseId];
+        const reference = frontierReference === "best"
+          ? game && game.best
+          : game && game.models && game.models[frontierReference];
+        if (!local || !reference) return null;
+        const ourScore = Number(local.score);
+        const frontierScore = Number(reference.score);
+        if (!Number.isFinite(ourScore) || !Number.isFinite(frontierScore)) return null;
+        return {
+          baseId:baseId, ourScore:ourScore, frontierScore:frontierScore,
+          gap:frontierScore - ourScore, game:game, reference:reference,
+          referenceName:selectedConfig ? selectedConfig.display_name : reference.display_name,
+        };
+      }).filter(Boolean).sort((a, b) => b.gap - a.gap);
+
+      if (!rows.length) return "";
+      const maxRoom = Math.max.apply(null, rows.map((row) => Math.max(row.gap, 0)).concat([1]));
+      const atOrAbove = rows.filter((row) => row.gap <= 0).length;
+      const frontierRows = rows.map((row) => {
+        const width = Math.max(row.gap, 0) / maxRoom * 100;
+        const replay = row.reference.replay_url
+          ? '<a target="_blank" rel="noopener" href="' + escapeHtml(row.reference.replay_url) + '">' +
+            escapeHtml(row.referenceName) + '</a>'
+          : escapeHtml(row.referenceName);
+        return '<div class="opportunity-row"><a class="game-id" target="_blank" rel="noopener" href="' +
+          escapeHtml(row.game.task_url) + '">' + escapeHtml(row.baseId) + '</a><span>' +
+          formatNumber(row.ourScore, 2) + '</span><span>' + formatNumber(row.frontierScore, 2) +
+          '</span><div class="room-track"><span class="room-bar" style="width:' + width +
+          '%"></span><span class="room-label">' + formatSigned(row.gap, "", 2) +
+          '</span></div><span class="frontier-model">' + replay + '</span></div>';
+      }).join("");
+
+
+      const referenceOptions = ['<option value="best"' + (frontierReference === "best" ? " selected" : "") +
+        '>Best per game (oracle) — ' + formatNumber(frontier.oracle_score, 2) + '</option>'].concat(
+        configEntries.map((entry) =>
+          '<option value="' + escapeHtml(entry.configId) + '"' +
+          (frontierReference === entry.configId ? " selected" : "") + '>' +
+          escapeHtml(entry.config.display_name) + ' — ' + formatNumber(entry.config.overall_score, 2) + '</option>'
+        )
+      ).join("");
+      const comparisonDescription = frontierReference === "best"
+        ? "the best featured-model result available for each individual game"
+        : escapeHtml(referenceLabel) + " on every game";
+
+      return '<section class="panel"><div class="head"><div><h2>Public frontier opportunity</h2>' +
+        '<div class="note">Candidate public score versus ' + comparisonDescription +
+        '. Largest positive gaps are the clearest room to improve.</div></div>' +
+        '<div class="frontier-controls"><div class="select-wrap frontier-select"><label for="frontier-model-select">Frontier reference</label>' +
+        '<select id="frontier-model-select">' + referenceOptions + '</select></div>' +
+        '<a target="_blank" rel="noopener" href="' + escapeHtml(frontier.source_url) + '">ARC Prize tasks</a></div></div>' +
+        '<div class="outcomes"><article class="outcome"><div class="label">Candidate public</div><div class="value">' +
+        formatNumber(candidate.score, 2) + '</div></article><article class="outcome"><div class="label">Frontier reference</div>' +
+        '<div class="value">' + formatNumber(referenceScore, 2) + '</div><div class="note">' + escapeHtml(referenceLabel) +
+        '</div></article><article class="outcome"><div class="label">Overall room</div><div class="value">' +
+        formatSigned(overallGap, "", 2) + '</div><div class="note">Frontier minus candidate</div></article>' +
+        '<article class="outcome"><div class="label">At / above reference</div>' +
+        '<div class="value good">' + atOrAbove + ' / ' + rows.length + '</div></article></div>' +
+        '<div class="opportunity-row muted" style="margin-top:14px"><span>Game</span><span>Ours</span><span>Frontier</span>' +
+        '<span style="text-align:center">Frontier minus ours</span><span class="frontier-model">Reference model</span></div>' +
+        '<div class="opportunity-chart">' + frontierRows + '</div><div class="note" style="margin-top:10px">Snapshot: ' +
+        escapeHtml(String(frontier.fetched_at || "").slice(0, 19)) + '. All ' + rows.length +
+        ' games are shown. Click a game to play it; click a reference model to view its replay.</div></section>';
     }
 
     function renderCatalog() {
       const order = registry.run_order || Object.keys(registry.runs);
       return order.map((runId) => {
-        const score = runScore(runId);
-        const mean = score.usage?.mean || {};
+        const pub = publicScore(runId);
+        const linked = linkedSemiPrivate(runId);
+        const semi = linked.length ? linked[linked.length - 1].score : null;
+        const mean = pub && pub.usage ? pub.usage.mean || {} : {};
         const selected = runId === baselineId ? "Baseline" : runId === candidateId ? "Candidate" : "";
         return '<tr><td class="catalog-run">' + escapeHtml(runId) + '</td><td>' +
-          escapeHtml(selected) + '</td><td>' + formatNumber(score.score, 3) + '</td><td>' +
-          formatNumber(mean.actions, 1) + '</td><td>' + formatNumber(mean.turns, 1) + '</td><td>' +
+          escapeHtml(selected) + '</td><td>' + formatNumber(pub && pub.score, 3) + '</td><td>' +
+          formatNumber(semi && semi.score, 3) + '</td><td>' + linked.length + '</td><td>' +
           formatNumber(mean.total_tokens, 0) + '</td></tr>';
       }).join("");
     }
 
+    function unlinkedImportsSection() {
+      const unlinked = (registry.semi_private_scores || []).filter((item) => !String(item.local_run_path || "").trim());
+      if (!unlinked.length) return "";
+      const rows = unlinked.map((item) =>
+        '<tr><td class="catalog-run">' + escapeHtml(item.id) + '</td><td>' +
+        escapeHtml(String(item.pulled_at || "").slice(0, 19)) + '</td><td>' +
+        escapeHtml(item.source_label || "") + '</td><td>' + formatNumber(item.score && item.score.score, 3) +
+        '</td><td><code>local_run_path: ""</code></td></tr>'
+      ).join("");
+      return '<details class="panel notice" open><summary>' + unlinked.length +
+        ' semi-private import' + (unlinked.length === 1 ? "" : "s") + ' need a local run path</summary>' +
+        '<div class="catalog"><table><thead><tr><th>Import</th><th>Pulled</th><th>Source</th><th>Score</th><th>Action</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+        '<div class="note" style="padding:12px 18px">Edit <code>runs/inference_score_comparison.json</code> and fill each ' +
+        '<code>local_run_path</code>. Imports are append-only; linking does not remove history.</div></details>';
+    }
+
     function render() {
-      const baseline = runScore(baselineId);
-      const candidate = runScore(candidateId);
+      const baseline = runScore(baselineId, scoreSet);
+      const candidate = runScore(candidateId, scoreSet);
+      if (!baseline || !candidate) {
+        document.getElementById("dashboard").className = "panel empty";
+        document.getElementById("dashboard").textContent =
+          "Both selected runs need a linked " + scoreSetLabel(scoreSet).toLowerCase() + " score.";
+        return;
+      }
+      const baselineInference = publicScore(baselineId) || baseline;
+      const candidateInference = publicScore(candidateId) || candidate;
       const games = commonGames(baseline, candidate);
-      const scoreDeltas = games.map((game) => Number(game.candidate.score) - Number(game.baseline.score));
+      const scoreDeltas = games.map((game) => Number(game.candidate.score) - Number(game.baseline.score))
+        .filter(Number.isFinite);
       const improved = scoreDeltas.filter((delta) => delta > 1e-9).length;
       const regressed = scoreDeltas.filter((delta) => delta < -1e-9).length;
       const tied = scoreDeltas.length - improved - regressed;
-      const scoreDelta = candidate.score - baseline.score;
+      const scoreDelta = Number(candidate.score) - Number(baseline.score);
       const scoreChange = percentChange(baseline.score, candidate.score);
-      const baselineMean = baseline.usage?.mean || {};
-      const candidateMean = candidate.usage?.mean || {};
+      const baselineMean = baselineInference.usage ? baselineInference.usage.mean || {} : {};
+      const candidateMean = candidateInference.usage ? candidateInference.usage.mean || {} : {};
       const serverMetrics = {
         prompt: {
-          baseline: baseline.server?.prompt_throughput_tokens_per_s?.mean,
-          candidate: candidate.server?.prompt_throughput_tokens_per_s?.mean,
+          baseline: baselineInference.server && baselineInference.server.prompt_throughput_tokens_per_s
+            ? baselineInference.server.prompt_throughput_tokens_per_s.mean : null,
+          candidate: candidateInference.server && candidateInference.server.prompt_throughput_tokens_per_s
+            ? candidateInference.server.prompt_throughput_tokens_per_s.mean : null,
         },
         generation: {
-          baseline: baseline.server?.generation_throughput_tokens_per_s?.mean,
-          candidate: candidate.server?.generation_throughput_tokens_per_s?.mean,
+          baseline: baselineInference.server && baselineInference.server.generation_throughput_tokens_per_s
+            ? baselineInference.server.generation_throughput_tokens_per_s.mean : null,
+          candidate: candidateInference.server && candidateInference.server.generation_throughput_tokens_per_s
+            ? candidateInference.server.generation_throughput_tokens_per_s.mean : null,
         },
         prefix: {
-          baseline: baseline.server?.prefix_cache_hit_rate_pct?.mean,
-          candidate: candidate.server?.prefix_cache_hit_rate_pct?.mean,
+          baseline: baselineInference.server && baselineInference.server.prefix_cache_hit_rate_pct
+            ? baselineInference.server.prefix_cache_hit_rate_pct.mean : null,
+          candidate: candidateInference.server && candidateInference.server.prefix_cache_hit_rate_pct
+            ? candidateInference.server.prefix_cache_hit_rate_pct.mean : null,
         },
         kv: {
-          baseline: baseline.server?.gpu_kv_cache_usage_pct?.mean,
-          candidate: candidate.server?.gpu_kv_cache_usage_pct?.mean,
+          baseline: baselineInference.server && baselineInference.server.gpu_kv_cache_usage_pct
+            ? baselineInference.server.gpu_kv_cache_usage_pct.mean : null,
+          candidate: candidateInference.server && candidateInference.server.gpu_kv_cache_usage_pct
+            ? candidateInference.server.gpu_kv_cache_usage_pct.mean : null,
         },
       };
 
-      document.getElementById("subtitle").textContent =
-        (registry.run_order?.length || Object.keys(registry.runs).length) + " scored runs available";
-      document.getElementById("dashboard").outerHTML =
-        '<div id="dashboard">' +
-        '<section class="hero"><article class="score"><div class="eyebrow">Overall score</div>' +
-        '<div class="score-line"><span class="score-old">' + formatNumber(baseline.score, 2) +
-        '</span><span>to</span><span class="score-new">' + formatNumber(candidate.score, 2) +
-        '</span></div><div class="score-change">' + formatSigned(scoreDelta, "", 2) + ' / ' +
-        formatSigned(scoreChange, "%", 1) + '</div><div class="run-names"><span>BASE / ' +
-        escapeHtml(baselineId) + '</span><span>CAND / ' + escapeHtml(candidateId) +
-        '</span></div></article><div class="kpis">' +
-        metricCard("Mean actions / trial", baselineMean.actions, candidateMean.actions) +
-        metricCard("Mean turns / trial", baselineMean.turns, candidateMean.turns) +
-        metricCard("Mean tokens / trial", baselineMean.total_tokens, candidateMean.total_tokens) +
+      const dashboard = document.getElementById("dashboard");
+      dashboard.className = "";
+      dashboard.innerHTML =
+        unlinkedImportsSection() +
+        '<section class="hero"><article class="score"><div class="eyebrow">' +
+        escapeHtml(scoreSetLabel(scoreSet)) + ' overall score</div><div class="score-line"><span class="score-old">' +
+        formatNumber(baseline.score, 2) + '</span><span>to</span><span class="score-new">' +
+        formatNumber(candidate.score, 2) + '</span></div><div class="score-change">' +
+        formatSigned(scoreDelta, "", 2) + ' (' + formatSigned(scoreChange, "%", 1) + ')</div>' +
+        '<div class="run-names"><span>Baseline: ' + escapeHtml(baselineId) +
+        '</span><span>Candidate: ' + escapeHtml(candidateId) + '</span></div></article>' +
+        '<div style="display:grid;gap:10px"><div class="score-sources">' +
+        sourceCard("public", publicScore(baselineId), publicScore(candidateId)) +
+        sourceCard("semi_private", semiPrivateScore(baselineId), semiPrivateScore(candidateId)) +
+        '</div><div class="kpis">' +
+        metricCard("Mean actions / public trial", baselineMean.actions, candidateMean.actions) +
+        metricCard("Mean turns / public trial", baselineMean.turns, candidateMean.turns) +
+        metricCard("Mean tokens / public trial", baselineMean.total_tokens, candidateMean.total_tokens) +
         metricCard("Tokens / action", baselineMean.tokens_per_action, candidateMean.tokens_per_action) +
-        '</div></section>' +
+        '</div></div></section>' +
 
         '<section class="panel"><div class="head"><div><h2>All-game outcome</h2>' +
-        '<div class="note">' + games.length + ' common games; score deltas summarize the whole set.</div></div></div>' +
+        '<div class="note">' + games.length + ' common ' + escapeHtml(scoreSetLabel(scoreSet).toLowerCase()) +
+        ' games. Inference usage always comes from the local public run.</div></div></div>' +
         '<div class="outcomes"><article class="outcome"><div class="label">Improved</div><div class="value good">' +
         improved + '</div></article><article class="outcome"><div class="label">Regressed</div><div class="value bad">' +
         regressed + '</div></article><article class="outcome"><div class="label">Tied</div><div class="value">' +
         tied + '</div></article><article class="outcome"><div class="label">Median score delta</div><div class="value">' +
         formatSigned(median(scoreDeltas), "", 2) + '</div></article></div></section>' +
 
-        '<section class="panel"><div class="head"><div><h2>Game-by-game distribution</h2>' +
-        '<div class="note">Sorted by largest absolute change. Center line is no change.</div></div>' +
+        '<section class="panel"><div class="head"><div><h2>Game-by-game run comparison</h2>' +
+        '<div class="note">Click a column header to sort. Every underlined game ID opens its ARC Prize play page.</div></div>' +
         '<div class="metric-tabs">' + Object.entries(metricDefinitions).map(([key, definition]) =>
           '<button class="metric-tab ' + (key === gameMetric ? "active" : "") +
           '" data-metric="' + key + '">' + escapeHtml(definition.label) + '</button>'
-        ).join("") + '</div></div><div class="game-row muted"><span>Game</span><span>Baseline</span>' +
-        '<span style="text-align:center">Candidate minus baseline</span><span style="text-align:right">Candidate</span>' +
+        ).join("") + '</div></div><div class="game-row muted">' +
+        '<button type="button" class="game-sort" data-game-sort="gameId">Game ID <span class="sort-indicator" aria-hidden="true"></span></button>' +
+        '<button type="button" class="game-sort" data-game-sort="baselineValue">Baseline <span class="sort-indicator" aria-hidden="true"></span></button>' +
+        '<button type="button" class="game-sort center" data-game-sort="delta">Candidate minus baseline <span class="sort-indicator" aria-hidden="true"></span></button>' +
+        '<button type="button" class="game-sort right" data-game-sort="candidateValue">Candidate <span class="sort-indicator" aria-hidden="true"></span></button>' +
         '</div><div class="game-chart" id="game-chart"></div></section>' +
 
-        '<section class="panel"><div class="head"><div><h2>Score efficiency</h2>' +
-        '<div class="note">Higher means more score for the same inference budget.</div></div></div>' +
+        frontierSection(candidateId) +
+
+        '<section class="panel"><div class="head"><div><h2>Public score efficiency</h2>' +
+        '<div class="note">Higher means more public score for the same local inference budget.</div></div></div>' +
         '<div class="efficiency">' +
-        efficiencyCard("Per 1M mean tokens", "tokens", baseline, candidate) +
-        efficiencyCard("Per 100 mean turns", "turns", baseline, candidate) +
-        efficiencyCard("Per 100 mean actions", "actions", baseline, candidate) +
+        efficiencyCard("Per 1M mean tokens", "tokens", baselineInference, candidateInference) +
+        efficiencyCard("Per 100 mean turns", "turns", baselineInference, candidateInference) +
+        efficiencyCard("Per 100 mean actions", "actions", baselineInference, candidateInference) +
         '</div></section>' +
 
-        '<div class="grid2"><section class="panel"><div class="head"><h2>Inference usage</h2></div>' +
+        '<div class="grid2"><section class="panel"><div class="head"><h2>Local inference usage</h2></div>' +
         pairedMetrics({
           actions:{baseline:baselineMean.actions,candidate:candidateMean.actions},
           turns:{baseline:baselineMean.turns,candidate:candidateMean.turns},
@@ -405,26 +666,57 @@
           {key:"kv",label:"GPU KV cache use / %",digits:1},
         ]) + '</section></div>' +
 
-        '<details class="panel"><summary>All scored runs (' +
-        (registry.run_order?.length || Object.keys(registry.runs).length) +
+        '<details class="panel"><summary>All Qwen 3.8-era scored runs (' +
+        (registry.run_order ? registry.run_order.length : Object.keys(registry.runs).length) +
         ')</summary><div class="catalog"><table><thead><tr><th>Run</th><th>Selected as</th>' +
-        '<th>Score</th><th>Mean actions</th><th>Mean turns</th><th>Mean tokens</th></tr></thead>' +
-        '<tbody>' + renderCatalog() + '</tbody></table></div></details></div>';
+        '<th>Public score</th><th>Semi-private score</th><th>Linked imports</th><th>Mean public tokens</th></tr></thead>' +
+        '<tbody>' + renderCatalog() + '</tbody></table></div></details>';
 
+      const frontierModelSelect = document.getElementById("frontier-model-select");
+      if (frontierModelSelect) {
+        frontierModelSelect.addEventListener("change", () => {
+          frontierReference = frontierModelSelect.value;
+          render();
+        });
+      }
       document.querySelectorAll(".metric-tab").forEach((button) => {
         button.addEventListener("click", () => {
           gameMetric = button.dataset.metric;
           renderGameChart(games);
         });
       });
+      document.querySelectorAll(".game-sort").forEach((button) => {
+        button.addEventListener("click", () => {
+          const requestedKey = button.dataset.gameSort;
+          if (requestedKey === gameSortKey) {
+            gameSortDirection = gameSortDirection === "asc" ? "desc" : "asc";
+          } else {
+            gameSortKey = requestedKey;
+            gameSortDirection = requestedKey === "gameId" ? "asc" : "desc";
+          }
+          renderGameChart(games);
+        });
+      });
       renderGameChart(games);
+    }
+
+    function refreshScoreSetSelector() {
+      const selector = document.getElementById("score-set-select");
+      const availability = {
+        public: Boolean(publicScore(baselineId) && publicScore(candidateId)),
+        semi_private: Boolean(semiPrivateScore(baselineId) && semiPrivateScore(candidateId)),
+      };
+      if (!availability[scoreSet]) scoreSet = availability.public ? "public" : "semi_private";
+      selector.innerHTML = ["public", "semi_private"].map((key) =>
+        '<option value="' + key + '"' + (availability[key] ? "" : " disabled") + '>' +
+        escapeHtml(scoreSetLabel(key)) + (availability[key] ? "" : " (link both runs)") + '</option>'
+      ).join("");
+      selector.value = scoreSet;
     }
 
     function populateSelectors() {
       const order = registry.run_order || Object.keys(registry.runs);
-      if (order.length < 2) {
-        throw new Error("At least two scored runs are required for comparison.");
-      }
+      if (order.length < 2) throw new Error("At least two post-2026-08-10 scored runs are required.");
       baselineId = order[order.length - 2];
       candidateId = order[order.length - 1];
       const options = order.map((runId) =>
@@ -432,32 +724,44 @@
       ).join("");
       const baselineSelect = document.getElementById("baseline-select");
       const candidateSelect = document.getElementById("candidate-select");
+      const scoreSetSelect = document.getElementById("score-set-select");
       baselineSelect.innerHTML = options;
       candidateSelect.innerHTML = options;
       baselineSelect.value = baselineId;
       candidateSelect.value = candidateId;
+      refreshScoreSetSelector();
+
       baselineSelect.addEventListener("change", () => {
-        const previousBaseline = baselineId;
+        const previous = baselineId;
         baselineId = baselineSelect.value;
         if (baselineId === candidateId) {
-          candidateId = previousBaseline;
+          candidateId = previous;
           candidateSelect.value = candidateId;
         }
+        refreshScoreSetSelector();
         render();
       });
       candidateSelect.addEventListener("change", () => {
-        const previousCandidate = candidateId;
+        const previous = candidateId;
         candidateId = candidateSelect.value;
         if (candidateId === baselineId) {
-          baselineId = previousCandidate;
+          baselineId = previous;
           baselineSelect.value = baselineId;
         }
+        refreshScoreSetSelector();
+        render();
+      });
+      scoreSetSelect.addEventListener("change", () => {
+        scoreSet = scoreSetSelect.value;
         render();
       });
       document.getElementById("swap-button").addEventListener("click", () => {
-        [baselineId, candidateId] = [candidateId, baselineId];
+        const previous = baselineId;
+        baselineId = candidateId;
+        candidateId = previous;
         baselineSelect.value = baselineId;
         candidateSelect.value = candidateId;
+        refreshScoreSetSelector();
         render();
       });
       document.getElementById("selectors").hidden = false;
@@ -469,10 +773,14 @@
         return body;
       }))
       .then((body) => {
-        if (body.version !== 2 || !body.runs) {
-          throw new Error("Comparison registry must be regenerated in version-2 format.");
+        if (body.version !== 3 || !body.runs) {
+          throw new Error("Comparison registry must be regenerated in version-3 format.");
         }
         registry = body;
+        const cutoff = String(body.minimum_run_date || "20260810");
+        document.getElementById("subtitle").textContent =
+          (body.run_order || Object.keys(body.runs)).length + " scored runs on/after " +
+          cutoff.slice(0, 4) + "-" + cutoff.slice(4, 6) + "-" + cutoff.slice(6, 8);
         populateSelectors();
         render();
       })

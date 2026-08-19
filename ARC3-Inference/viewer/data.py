@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from inference.tools.score_registry import DEFAULT_MINIMUM_RUN_DATE
 from inference.utils.run_artifacts import is_selectable_run_dir_name, run_dir_sort_key
 from inference.utils.viewer_artifacts import load_raw_events
 
@@ -96,8 +97,18 @@ def _direct_run_dir(path: str | Path) -> Path | None:
     return None
 
 
+def _is_auto_selectable_run_dir(path: Path) -> bool:
+    """Return whether a Qwen 3.8-era run has data the viewer can display."""
+    return (
+        path.is_dir()
+        and is_selectable_run_dir_name(path.name)
+        and path.name[:8] >= DEFAULT_MINIMUM_RUN_DATE
+        and bool(_viewer_data_paths(path))
+    )
+
+
 def find_latest_run_dir(base_dir: str | Path = "runs") -> Path | None:
-    """Return the newest timestamped run directory, if any."""
+    """Return the newest displayable Qwen 3.8-era run directory, if any."""
     runs_dir = Path(base_dir)
     if not runs_dir.exists():
         return None
@@ -105,14 +116,14 @@ def find_latest_run_dir(base_dir: str | Path = "runs") -> Path | None:
     if direct_run_dir is not None:
         return direct_run_dir
     candidates = sorted(
-        [path for path in runs_dir.iterdir() if path.is_dir() and is_selectable_run_dir_name(path.name)],
+        [path for path in runs_dir.iterdir() if _is_auto_selectable_run_dir(path)],
         key=run_dir_sort_key,
     )
     return candidates[-1] if candidates else None
 
 
 def list_run_dirs(base_dir: str | Path = "runs") -> list[Path]:
-    """Return timestamped run directories, newest first."""
+    """Return displayable Qwen 3.8-era run directories, newest first."""
     runs_dir = Path(base_dir)
     if not runs_dir.exists():
         return []
@@ -120,7 +131,7 @@ def list_run_dirs(base_dir: str | Path = "runs") -> list[Path]:
     if direct_run_dir is not None:
         return [direct_run_dir]
     return sorted(
-        [path for path in runs_dir.iterdir() if path.is_dir() and is_selectable_run_dir_name(path.name)],
+        [path for path in runs_dir.iterdir() if _is_auto_selectable_run_dir(path)],
         key=run_dir_sort_key,
         reverse=True,
     )

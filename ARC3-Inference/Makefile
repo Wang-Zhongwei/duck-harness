@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := interactive
 
-.PHONY: install install-local-sources prepare-ci server stop-server check-server interactive sbatch kaggle-duck run _taaf-run chat eval score_run significance view trace traces zip clean cluster_view_queue
+.PHONY: install install-local-sources prepare-ci server stop-server check-server interactive sbatch kaggle-duck run _taaf-run chat eval score_run pull_semi_private_score refresh_frontier_scores significance view trace traces zip clean cluster_view_queue
 
 -include .env
 
@@ -180,6 +180,10 @@ PROMPT ?=
 EVAL_CONFIG_PATH ?= configs/eval.json
 SCORE_OUTPUT_PATH ?=
 SCORE_RUN_DIR ?=
+SCORE_REGISTRY_PATH ?= $(RUNS_DIR)/inference_score_comparison.json
+SEMI_PRIVATE_SCORE_SOURCE ?=
+KAGGLE_COMPETITION ?= arc-prize-2026-arc-agi-3
+SEMI_PRIVATE_MINIMUM_DATE ?= 2026-08-10
 SIGNIFICANCE_CONFIG_PATH ?= configs/significance.json
 BASELINE_SCORE ?=
 CANDIDATE_SCORE ?=
@@ -191,9 +195,7 @@ BOOTSTRAP_SEED ?=
 VIEW_HOST ?= 127.0.0.1
 VIEW_PORT ?= $(shell $(CONFIG_VALUE) viewer.port 8011)
 VIEW_RUNS_DIR ?= $(RUNS_DIR)
-# Default to the bundled example-run at the repo root (this exposition ships one),
-# so a bare `make view` opens it. Falls back to VIEW_RUNS_DIR when absent.
-VIEW_RUN_DIR ?= $(wildcard $(REPO_ROOT)/../example-run)
+VIEW_RUN_DIR ?=
 
 export LOCAL_ANALYZER_BASE_URL
 export LOCAL_ANALYZER_PROVIDER
@@ -515,6 +517,17 @@ score_run:
 		exit 1; \
 	fi
 	$(UV_RUN) inference-eval "$(SCORE_RUN_DIR)" $(if $(SCORE_OUTPUT_PATH),--score-output "$(SCORE_OUTPUT_PATH)")
+
+
+pull_semi_private_score:
+	$(UV_RUN) python -m inference.tools.pull_semi_private_score \
+		--competition "$(KAGGLE_COMPETITION)" $(if $(SEMI_PRIVATE_SCORE_SOURCE),--source "$(SEMI_PRIVATE_SCORE_SOURCE)") \
+		--minimum-date "$(SEMI_PRIVATE_MINIMUM_DATE)" \
+		--runs-dir "$(RUNS_DIR)" \
+		--registry "$(SCORE_REGISTRY_PATH)"
+
+refresh_frontier_scores:
+	$(UV_RUN) python -m inference.tools.frontier_scores --registry "$(SCORE_REGISTRY_PATH)"
 
 significance:
 	$(UV_RUN) inference-significance \
