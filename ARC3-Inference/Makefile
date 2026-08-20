@@ -413,12 +413,12 @@ kaggle-duck: GAME_TAGS =
 kaggle-duck: EXCLUDE_GAME_TAGS =
 kaggle-duck: MODEL = local
 kaggle-duck: RUN_NAME = duck-harness-kaggle
-kaggle-duck: MAX_RUNTIME_MINUTES = 132
+kaggle-duck: MAX_RUNTIME_MINUTES = 75
 kaggle-duck: MAX_EXPERIMENT_RUNTIME_MINUTES = 540
 kaggle-duck: MAX_EXPERIMENT_RUNTIME_HOURS =
 kaggle-duck: N_PASSES = 1
-kaggle-duck: CONCURRENT_JOBS = 28
-kaggle-duck: ANALYZER_TIMEOUT = 900
+kaggle-duck: CONCURRENT_JOBS = 16
+kaggle-duck: ANALYZER_TIMEOUT = 400
 kaggle-duck: _taaf-run
 
 _taaf-run:
