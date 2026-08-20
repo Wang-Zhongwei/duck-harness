@@ -218,9 +218,14 @@ def _normalize_summary_text(value: Any, *, max_chars: int | None = 280) -> str:
 
 
 def _extract_labeled_blocks(content: str, labels: list[str]) -> dict[str, str]:
-    normalized_labels = {label.lower(): label for label in labels}
+    normalized_labels = {
+        spelling: label
+        for label in labels
+        for spelling in (label.lower(), label.lower().replace("-", ""))
+    }
     label_pattern = "|".join(
-        re.escape(label) for label in sorted(labels, key=len, reverse=True)
+        re.escape(label).replace(r"\-", r"-?")
+        for label in sorted(labels, key=len, reverse=True)
     )
     leading_qualifier_pattern = (
         r"(?:the|revised|updated|new|final|initial|current|working|refined|"
@@ -242,6 +247,9 @@ def _extract_labeled_blocks(content: str, labels: list[str]) -> dict[str, str]:
     )
     extracted: dict[str, list[str]] = {label: [] for label in labels}
     current_label: str | None = None
+    label_dash_translation = str.maketrans(
+        {dash: "-" for dash in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d"}
+    )
 
     for raw_line in content.splitlines():
         stripped = raw_line.strip()
@@ -251,7 +259,13 @@ def _extract_labeled_blocks(content: str, labels: list[str]) -> dict[str, str]:
 
         matched_label: str | None = None
         inline_value = ""
-        header_match = header_pattern.match(candidate)
+        # Models sometimes typography-substitute an ASCII hyphen in a requested
+        # label (for example, ``Cross‑level notes`` uses U+2011). Normalize only
+        # for header matching; the translation is one-to-one, so match offsets
+        # still select the correct value from the original response.
+        header_match = header_pattern.match(
+            candidate.translate(label_dash_translation)
+        )
         if header_match is not None:
             matched_label = normalized_labels[header_match.group("label").lower()]
             inline_value = candidate[header_match.end():].strip()
@@ -399,11 +413,6 @@ class _PendingLevelTransition:
     winning_result: dict[str, Any]
     completed_level_models: dict[str, str]
     phase: str = "review"
-    initialization_models: dict[str, str] | None = None
-
-    def __post_init__(self) -> None:
-        if self.initialization_models is None:
-            self.initialization_models = {}
 
 
 @dataclass(frozen=True)
@@ -1215,22 +1224,20 @@ class ToolAgent:
         winning_actions = [str(action) for action in winning_actions if action]
         return "\n".join(
             [
-                "The preceding action completed a level. Perform an isolated holistic review of the completed level before seeing the next level.",
-                "The attached image is the last observable frame immediately before the winning action. No next-level frame is present in this request.",
+                "The preceding action completed a level. Before seeing the next level, use this success as a strong piece of evidence to revise your understanding of the completed level.",
+                "The attached image is the last observable frame immediately before the winning action.",
                 f"Winning action(s): {', '.join(winning_actions) or '(unknown)'}.",
-                f"Winning result: {json.dumps(pending.winning_result, ensure_ascii=True, sort_keys=True)}",
-                "Completed-level working models:",
+                "Understanding carried from the last turn:",
                 f"World model: {models.get('world_model') or '(empty)'}",
                 f"Goal model: {models.get('goal_model') or '(empty)'}",
                 f"Action model: {models.get('action_model') or '(empty)'}",
                 f"Cross-level notes: {models.get('cross_level_notes') or '(empty)'}",
-                "Review the entire trajectory and winning evidence holistically. Return exactly these four labeled fields with substantive values:",
+                "Review the trajectory and make sense of why the winning action completed the level. Return exactly these four labeled fields:",
                 "World model:",
                 "Goal model:",
                 "Action model:",
                 "Cross-level notes:",
-                "Revise rather than merely repeat the models. Cross-level notes replace the old notes and must be compact. Retain only transferable mechanics, invariants, goal patterns, and uncertainties; omit coordinates and level-specific layout.",
-                "Do not call tools and do not speculate about the unseen next level.",
+                "Revise any belief contradicted by the winning evidence. Cross-level notes replace the old notes and must be compact: retain only transferable mechanics, invariants, goal patterns, and useful uncertainties; omit coordinates and level-specific layout.",
             ]
         )
 
@@ -1244,40 +1251,44 @@ class ToolAgent:
         cross_level_notes = self._summarized_knowledge.get("cross_level_notes", "")
         return "\n".join(
             [
-                f"The completed-level review succeeded. This is the first exposure to level {new_level}.",
+                (
+                    f"The completed-level review succeeded. This is the first exposure to level {new_level}; "
+                    "use the reviewed understanding as the starting point for interpreting it."
+                ),
                 "The attached image and `current_frame` are the actual new-level state.",
                 f"Valid actions right now: {_format_valid_action_line(valid_actions)}.",
                 f"Transferable cross-level notes: {cross_level_notes or '(none)'}",
-                "Identify visual correspondences with the reviewed mechanics and important differences in this new scene.",
-                "Use inspection-only Python calls as needed. You may inspect `current_frame`, `history`, and `valid_actions`, but `action(...)` is blocked until initialization is complete.",
-                "Before any environment action, emit substantive fresh entries for all three labels:",
+                (
+                    "Map the reviewed mechanics, object roles, and goal pattern onto the visible scene. "
+                    "Treat them as grounded working hypotheses: identify what carries over, what differs, "
+                    "and what needs to be re-verified in this level."
+                ),
+                (
+                    "Use Python inspection calls as needed, then take the best available environment action "
+                    "when ready. `action(...)` is available immediately."
+                ),
+                "You may emit fresh entries for any of these labels for the new level:",
                 "World model:",
                 "Goal model:",
                 "Action model:",
-                "These must describe the new level, not the completed level. Once all three have been emitted, normal observe-plan-act behavior resumes and `action(...)` becomes available.",
+                "Open questions:",
+                "Plan:",
                 TOOL_CALL_FORMAT_GUIDANCE,
             ]
         )
 
-    def _record_next_level_models(self, content: str) -> bool:
-        pending = self._pending_level_transition
-        if pending is None or pending.phase != "initialization":
-            return True
+    def _record_next_level_models(self, content: str) -> None:
         note = _extract_scientist_note(content)
-        initialization_models = pending.initialization_models
-        assert initialization_models is not None
-        for key in ("world_model", "goal_model", "action_model"):
+        for key in (
+            "world_model",
+            "goal_model",
+            "action_model",
+            "open_questions",
+            "current_plan",
+        ):
             value = note.get(key, "")
             if value:
-                initialization_models[key] = value
                 self._summarized_knowledge[key] = value
-        if not all(
-            initialization_models.get(key)
-            for key in ("world_model", "goal_model", "action_model")
-        ):
-            return False
-        self._pending_level_transition = None
-        return True
 
     def _complete_level_review(
         self,
@@ -1289,7 +1300,7 @@ class ToolAgent:
         review_system_prompt = (
             "You are reviewing a just-completed grid-puzzle level in isolation. "
             "Use only the supplied text and attached completed-level frame. "
-            "Do not call tools. Do not infer or describe the unseen next level."
+            "Do not call tools."
         )
         review_prompt = self._level_review_prompt(pending)
         messages = [
@@ -1717,26 +1728,6 @@ class ToolAgent:
 
         def _handle_action(actions: list[dict[str, Any]]) -> dict[str, Any]:
             nonlocal terminal_action_result
-            pending_transition = self._pending_level_transition
-            if pending_transition is not None and pending_transition.phase == "initialization":
-                missing = [
-                    label
-                    for key, label in (
-                        ("world_model", "World model"),
-                        ("goal_model", "Goal model"),
-                        ("action_model", "Action model"),
-                    )
-                    if not (pending_transition.initialization_models or {}).get(key)
-                ]
-                blocked_payload = {
-                    "executed": False,
-                    "error": "Environment actions are blocked during next-level initialization.",
-                    "missing_models": missing,
-                }
-                return {
-                    "action_result": blocked_payload,
-                    "state": _serialized_runtime_state(last_action_result=blocked_payload),
-                }
             if self._step_env_callback is None:
                 raise RuntimeError("action(actions) is not available in this session.")
             normalized_actions = self._normalize_python_actions(actions)
@@ -2030,11 +2021,18 @@ class ToolAgent:
                 )
 
         pending_transition = self._pending_level_transition
-        if pending_transition is not None and pending_transition.phase == "initialization":
+        next_level_initialization_turn = bool(
+            pending_transition is not None and pending_transition.phase == "initialization"
+        )
+        if next_level_initialization_turn:
             user_prompt = self._next_level_initialization_prompt(
                 current_frame=current_frame,
                 valid_actions=valid_actions,
             )
+            # The first-exposure prompt is one-shot. Models emitted during this
+            # analyzer turn are captured opportunistically below, but missing
+            # fields must never keep gameplay in an initialization state.
+            self._pending_level_transition = None
         else:
             user_prompt = self._build_user_prompt(
                 action_num,
@@ -2186,16 +2184,12 @@ class ToolAgent:
                     assistant_message["reasoning"] = reasoning
 
                 if not tool_calls:
-                    initialization_response = bool(
-                        self._pending_level_transition is not None
-                        and self._pending_level_transition.phase == "initialization"
-                    )
                     if content:
-                        if initialization_response:
+                        if next_level_initialization_turn:
                             self._record_next_level_models(content)
                         else:
                             self._update_summarized_knowledge_from_assistant(content)
-                        label = "NEXT LEVEL INITIALIZATION" if initialization_response else "ASSISTANT"
+                        label = "NEXT LEVEL INITIALIZATION" if next_level_initialization_turn else "ASSISTANT"
                         append_transcript(label, content)
                         assistant_message["content"] = content
                     elif reasoning:
@@ -2206,28 +2200,6 @@ class ToolAgent:
                     yielded_control_reason = control_yield_reason()
                     if yielded_control_reason is not None:
                         break
-                    pending_initialization = self._pending_level_transition
-                    if (
-                        pending_initialization is not None
-                        and pending_initialization.phase == "initialization"
-                    ):
-                        missing = [
-                            label
-                            for key, label in (
-                                ("world_model", "World model"),
-                                ("goal_model", "Goal model"),
-                                ("action_model", "Action model"),
-                            )
-                            if not (pending_initialization.initialization_models or {}).get(key)
-                        ]
-                        followup_prompt = (
-                            "Next-level initialization is incomplete. Inspection-only Python is available, "
-                            "but environment actions remain blocked. Emit fresh substantive entries for: "
-                            f"{', '.join(missing)}."
-                        )
-                        append_transcript("USER PROMPT", followup_prompt)
-                        messages.append({"role": "user", "content": followup_prompt})
-                        continue
                     followup_prefix = "You have not acted yet. Investigate first. "
                     if tool_call_markup_in_text:
                         followup_prefix = (
@@ -2250,16 +2222,12 @@ class ToolAgent:
                     messages.append({"role": "user", "content": followup_prompt})
                     continue
 
-                initialization_response = bool(
-                    self._pending_level_transition is not None
-                    and self._pending_level_transition.phase == "initialization"
-                )
                 if content:
-                    if initialization_response:
+                    if next_level_initialization_turn:
                         self._record_next_level_models(content)
                     else:
                         self._update_summarized_knowledge_from_assistant(content)
-                    label = "NEXT LEVEL INITIALIZATION" if initialization_response else "ASSISTANT"
+                    label = "NEXT LEVEL INITIALIZATION" if next_level_initialization_turn else "ASSISTANT"
                     append_transcript(label, content)
                     assistant_message["content"] = content
                 assistant_message["tool_calls"] = tool_calls

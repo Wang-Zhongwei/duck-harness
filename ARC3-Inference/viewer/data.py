@@ -1532,11 +1532,20 @@ def _new_analysis_group(analysis_step: int, source_event_index: int) -> dict[str
     return {
         "analysis_step": analysis_step,
         "source_event_index": source_event_index,
-        "analysis_event": None,
+        "analysis_events": [],
         "pre_board_event": None,
         "actions": [],
         "last_action_event": None,
     }
+
+
+def _group_analysis_events(group: dict[str, Any]) -> list[dict[str, Any]]:
+    return list(group.get("analysis_events") or [])
+
+
+def _latest_group_analysis_event(group: dict[str, Any]) -> dict[str, Any] | None:
+    analysis_events = _group_analysis_events(group)
+    return analysis_events[-1] if analysis_events else None
 
 
 def _build_standalone_action_step(
@@ -1602,14 +1611,15 @@ def _build_analysis_frame_step(
     request_snapshots: list[dict[str, Any]],
     prior_analysis_events: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    analysis_event = group.get("analysis_event")
+    analysis_events = _group_analysis_events(group)
+    analysis_event = analysis_events[-1] if analysis_events else None
     board_event = group.get("pre_board_event") or analysis_event or group.get("last_action_event")
     summary_event = analysis_event or board_event or group.get("last_action_event")
     request_snapshot = _latest_request_snapshot(
         request_snapshots,
         analysis_step=_normalize_analysis_step(group.get("analysis_step")),
     )
-    context_events = [analysis_event] if (request_snapshot is not None and analysis_event is not None) else prior_analysis_events
+    context_events = analysis_events if request_snapshot is not None else prior_analysis_events
 
     return _apply_action_summary(
         {
@@ -1623,7 +1633,7 @@ def _build_analysis_frame_step(
                 request_snapshot=request_snapshot,
             ),
             "localContext": _extract_context(
-                [analysis_event] if analysis_event is not None else [],
+                analysis_events,
                 include_system_prompt=include_system_prompt,
             ),
             "score": board_event.get("score") if board_event else None,
@@ -1640,7 +1650,11 @@ def _build_latest_state_step(
     *,
     action_summary: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    latest_event = group.get("last_action_event") or group.get("analysis_event") or group.get("pre_board_event")
+    latest_event = (
+        group.get("last_action_event")
+        or _latest_group_analysis_event(group)
+        or group.get("pre_board_event")
+    )
     return _apply_action_summary(
         {
             "title": "Latest State",
@@ -1688,7 +1702,8 @@ def _lightweight_analysis_step(
     index: int,
     action_summary: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    analysis_event = group.get("analysis_event")
+    analysis_events = _group_analysis_events(group)
+    analysis_event = analysis_events[-1] if analysis_events else None
     board_event = group.get("pre_board_event") or analysis_event or group.get("last_action_event")
     summary_event = analysis_event or board_event or group.get("last_action_event")
     step = _apply_action_summary(
@@ -1717,7 +1732,11 @@ def _lightweight_latest_state_step(
     index: int,
     action_summary: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    latest_event = group.get("last_action_event") or group.get("analysis_event") or group.get("pre_board_event")
+    latest_event = (
+        group.get("last_action_event")
+        or _latest_group_analysis_event(group)
+        or group.get("pre_board_event")
+    )
     step = _apply_action_summary(
         {
             "title": "Latest State",
@@ -1831,7 +1850,7 @@ def _build_lightweight_viewer_steps(events: list[dict[str, Any]]) -> list[dict[s
             else:
                 group = analysis_groups.setdefault(analysis_step, _new_analysis_group(analysis_step, event_index))
                 group["source_event_index"] = min(group["source_event_index"], event_index)
-                group["analysis_event"] = event
+                group["analysis_events"].append(event)
                 if group["pre_board_event"] is None:
                     group["pre_board_event"] = current_board_event or event
             continue
@@ -1911,21 +1930,18 @@ def _hydrate_lightweight_step(
     if analysis_step is None:
         return step
 
-    analysis_event = next(
-        (
-            event
-            for event in events
-            if event.get("type") == "analysis" and _normalize_analysis_step(event.get("analysis_step")) == analysis_step
-        ),
-        None,
-    )
-    if analysis_event is None:
+    analysis_events = [
+        _normalize_event(event)
+        for event in events
+        if event.get("type") == "analysis"
+        and _normalize_analysis_step(event.get("analysis_step")) == analysis_step
+    ]
+    if not analysis_events:
         return step
 
-    normalized_event = _normalize_event(analysis_event)
     request_snapshot = _latest_request_snapshot(request_snapshots, analysis_step=analysis_step)
     context = _extract_context(
-        [normalized_event],
+        analysis_events,
         include_system_prompt=step_index == 0,
         request_snapshot=request_snapshot,
     )
@@ -1993,7 +2009,7 @@ def _build_viewer_steps(events: list[dict[str, Any]], *, request_snapshots: list
             else:
                 group = analysis_groups.setdefault(analysis_step, _new_analysis_group(analysis_step, event_index))
                 group["source_event_index"] = min(group["source_event_index"], event_index)
-                group["analysis_event"] = event
+                group["analysis_events"].append(event)
                 if group["pre_board_event"] is None:
                     group["pre_board_event"] = current_board_event or event
             continue
@@ -2009,9 +2025,7 @@ def _build_viewer_steps(events: list[dict[str, Any]], *, request_snapshots: list
     previous_action_summary: dict[str, Any] | None = None
     cumulative_analysis_events: list[dict[str, Any]] = []
     for index, group in enumerate(ordered_analysis_groups):
-        analysis_event = group.get("analysis_event")
-        if analysis_event is not None:
-            cumulative_analysis_events.append(analysis_event)
+        cumulative_analysis_events.extend(_group_analysis_events(group))
         analysis_steps.append(
             _build_analysis_frame_step(
                 group,

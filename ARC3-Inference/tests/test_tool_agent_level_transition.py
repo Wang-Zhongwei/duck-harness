@@ -10,7 +10,13 @@ from inference.agent.tool_agent import (
     _PendingLevelTransition,
     _empty_world_model,
 )
-from viewer.data import _split_labeled_sections
+from viewer.data import (
+    _build_lightweight_viewer_steps,
+    _build_viewer_steps,
+    _hydrate_lightweight_step,
+    _normalize_event,
+    _split_labeled_sections,
+)
 
 
 def _frame(value: int, *, step: int, level: int) -> Frame:
@@ -171,7 +177,7 @@ def test_level_review_isolated_to_completed_frame_and_replaces_only_cross_notes(
     assert agent._history_messages == []
 
 
-def test_analyze_reviews_old_frame_before_initializing_with_new_frame(
+def test_analyze_reviews_old_frame_then_allows_first_new_level_action(
     tmp_path: Path,
 ) -> None:
     state_path = tmp_path / "tool_runtime_state.json"
@@ -191,6 +197,7 @@ def test_analyze_reviews_old_frame_before_initializing_with_new_frame(
     agent._history_messages = [{"role": "user", "content": "NEW_LEVEL_SENTINEL"}]
     attached_frames: list[Frame | None] = []
     requests: list[dict[str, Any]] = []
+    callback_calls: list[dict[str, Any]] = []
 
     def build_user_message(prompt: str, frame: Frame | None) -> dict[str, Any]:
         attached_frames.append(frame)
@@ -200,21 +207,38 @@ def test_analyze_reviews_old_frame_before_initializing_with_new_frame(
         [
             _ChatCompletionResult(
                 message={
-                    "content": (
-                        "World model: Reviewed old world.\n"
-                        "Goal model: Reviewed old goal.\n"
-                        "Action model: Reviewed old actions.\n"
-                        "Cross-level notes: Reviewed transferable invariant."
+                    "content": chr(10).join(
+                        [
+                            "World model: Reviewed old world.",
+                            "Goal model: Reviewed old goal.",
+                            "Action model: Reviewed old actions.",
+                            "Cross-level notes: Reviewed transferable invariant.",
+                        ]
                     )
                 }
             ),
             _ChatCompletionResult(
                 message={
-                    "content": (
-                        "World model: Fresh new world.\n"
-                        "Goal model: Fresh new goal.\n"
-                        "Action model: Fresh new actions."
-                    )
+                    "content": chr(10).join(
+                        [
+                            "World model: Fresh new world.",
+                            "Open questions: Is the step size unchanged?",
+                            "Plan: Probe one move, then compare frames.",
+                            "Cross-level notes: Layout-specific overwrite.",
+                        ]
+                    ),
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "python",
+                                "arguments": json.dumps(
+                                    {"code": "action([valid_actions[0]])"}
+                                ),
+                            },
+                        }
+                    ],
                 }
             ),
         ]
@@ -229,33 +253,65 @@ def test_analyze_reviews_old_frame_before_initializing_with_new_frame(
         requests.append({"messages": messages, "tools": tools})
         return next(responses)
 
+    def step_env(request: dict[str, Any]) -> dict[str, Any]:
+        callback_calls.append(request)
+        return {
+            "executed": True,
+            "action_num": 6,
+            "level": 2,
+            "valid_actions": ["LEFT"],
+            "level_completed": False,
+            "run_complete": False,
+            "action_display": "LEFT",
+        }
+
     agent._build_user_message = build_user_message
     agent._chat_completion = chat_completion
     result = agent.analyze(
         state_path,
         action_num=5,
         valid_actions=["LEFT"],
-        step_env=lambda _request: {},
+        step_env=step_env,
         transcript_path=transcript_path,
         analysis_step=2,
     )
 
     assert result is not None
     assert not result.retryable_failure
-    assert not result.step_executed
+    assert result.step_executed
+    assert callback_calls == [{"actions": [{"action": "LEFT"}]}]
     assert attached_frames == [old_frame, new_frame]
     assert requests[0]["tools"] is None
     assert requests[1]["tools"] is not None
     assert "NEW_LEVEL_SENTINEL" not in json.dumps(requests[0]["messages"])
+    first_exposure_request = json.dumps(requests[1]["messages"])
+    assert "`action(...)` is available immediately" in first_exposure_request
+    assert "blocked until initialization is complete" not in first_exposure_request
     transcript = transcript_path.read_text(encoding="utf-8")
     assert "[LEVEL REVIEW]" in transcript
     assert "[NEXT LEVEL INITIALIZATION]" in transcript
     assert agent._pending_level_transition is None
     assert agent._summarized_knowledge["world_model"] == "Fresh new world."
+    assert agent._summarized_knowledge["goal_model"] == ""
+    assert agent._summarized_knowledge["action_model"] == ""
+    assert (
+        agent._summarized_knowledge["open_questions"]
+        == "Is the step size unchanged?"
+    )
+    assert (
+        agent._summarized_knowledge["current_plan"]
+        == "Probe one move, then compare frames."
+    )
     assert (
         agent._summarized_knowledge["cross_level_notes"]
         == "Reviewed transferable invariant."
     )
+    carried_models = chr(10).join(agent._summarized_knowledge_lines())
+    assert "World model: Fresh new world." in carried_models
+    assert "Goal model:" not in carried_models
+    assert "Action model:" not in carried_models
+    assert "Open questions: Is the step size unchanged?" in carried_models
+    assert "Plan: Probe one move, then compare frames." in carried_models
 
 
 def test_missing_review_fields_get_one_correction_then_retryable_checkpoint() -> None:
@@ -380,7 +436,7 @@ def test_python_action_transition_hides_new_frame_and_captures_old_models(
     )
 
 
-def test_initialization_allows_inspection_but_blocks_action_until_models_exist(
+def test_initialization_allows_action_and_captures_models_best_effort(
     tmp_path: Path,
 ) -> None:
     state_path = tmp_path / "tool_runtime_state.json"
@@ -396,31 +452,47 @@ def test_initialization_allows_inspection_but_blocks_action_until_models_exist(
     agent._pending_level_transition = pending
     agent._summarized_knowledge["cross_level_notes"] = "Reviewed invariant"
     callback_calls: list[dict[str, Any]] = []
-    agent._step_env_callback = lambda request: callback_calls.append(request) or {}
 
+    def step_env(request: dict[str, Any]) -> dict[str, Any]:
+        callback_calls.append(request)
+        return {
+            "executed": True,
+            "action_num": 6,
+            "level": 2,
+            "valid_actions": ["LEFT"],
+            "action_display": "LEFT",
+        }
+
+    agent._step_env_callback = step_env
     inspection = agent._run_python_tool(
         state_path,
         {"code": "result = current_frame.level"},
     )
-    blocked = agent._run_python_tool(
+    acted = agent._run_python_tool(
         state_path,
-        {"code": "result = action('LEFT')"},
+        {"code": "result = action([valid_actions[0]])"},
     )
 
     assert json.loads(inspection.content)["result"] == 2
-    blocked_payload = json.loads(blocked.content)["result"]
-    assert not blocked.step_executed
-    assert blocked_payload["error"].startswith("Environment actions are blocked")
-    assert callback_calls == []
+    assert acted.step_executed
+    assert callback_calls == [{"actions": [{"action": "LEFT"}]}]
 
-    assert not agent._record_next_level_models(
-        "World model: New world.\nGoal model: New goal."
+    agent._record_next_level_models(
+        chr(10).join(
+            [
+                "World model: New world.",
+                "Goal model: New goal.",
+                "Open questions: New uncertainty.",
+                "Plan: Test the uncertainty.",
+                "Cross-level notes: Layout-specific overwrite.",
+            ]
+        )
     )
-    assert agent._pending_level_transition is pending
-    assert agent._record_next_level_models(
-        "Action model: New actions.\nCross-level notes: Layout-specific overwrite."
-    )
-    assert agent._pending_level_transition is None
+    assert agent._summarized_knowledge["world_model"] == "New world."
+    assert agent._summarized_knowledge["goal_model"] == "New goal."
+    assert agent._summarized_knowledge["action_model"] == ""
+    assert agent._summarized_knowledge["open_questions"] == "New uncertainty."
+    assert agent._summarized_knowledge["current_plan"] == "Test the uncertainty."
     assert agent._summarized_knowledge["cross_level_notes"] == "Reviewed invariant"
 
 
@@ -437,3 +509,40 @@ def test_viewer_classifies_transition_sections_as_reasoning() -> None:
             "kind": "reasoning",
         },
     ]
+
+
+def test_viewer_preserves_multiple_analysis_events_for_one_step() -> None:
+    events = [
+        {"type": "initial", "board": [[0]], "score": 0, "level": 1},
+        {
+            "type": "analysis",
+            "analysis_step": 2,
+            "transcript": "[LEVEL REVIEW]\nWorld model: Reviewed completed level.",
+        },
+        {
+            "type": "analysis",
+            "analysis_step": 2,
+            "transcript": (
+                "[NEXT LEVEL INITIALIZATION]\n"
+                "World model: Initialized new level."
+            ),
+        },
+    ]
+    normalized_events = [_normalize_event(event) for event in events]
+
+    full_step = _build_viewer_steps(normalized_events)[0]
+    assert [section["label"] for section in full_step["localContext"]["sections"]] == [
+        "LEVEL REVIEW",
+        "NEXT LEVEL INITIALIZATION",
+    ]
+
+    lightweight_step = _build_lightweight_viewer_steps(events)[0]
+    hydrated_step = _hydrate_lightweight_step(
+        lightweight_step,
+        events,
+        request_snapshots=[],
+        step_index=0,
+    )
+    assert [
+        section["label"] for section in hydrated_step["localContext"]["sections"]
+    ] == ["LEVEL REVIEW", "NEXT LEVEL INITIALIZATION"]

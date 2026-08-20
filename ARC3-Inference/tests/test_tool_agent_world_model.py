@@ -77,6 +77,31 @@ def test_extract_labeled_blocks_accepts_markdown_wrapped_qualified_label() -> No
     }
 
 
+def test_extract_scientist_note_accepts_typographic_hyphen_in_cross_level_notes() -> None:
+    content = """\\
+World model: Two dotted clusters flank a central line.
+Goal model: Close the horizontal gap between the clusters.
+Action model: Probe one step toward the other cluster.
+Cross‑level notes: Don't anchor the goal to the colored element.
+"""
+
+    assert _extract_scientist_note(content) == {
+        "world_model": "Two dotted clusters flank a central line.",
+        "goal_model": "Close the horizontal gap between the clusters.",
+        "action_model": "Probe one step toward the other cluster.",
+        "recent_findings": "",
+        "open_questions": "",
+        "current_plan": "",
+        "cross_level_notes": "Don't anchor the goal to the colored element.",
+    }
+
+
+def test_extract_scientist_note_accepts_cross_level_notes_without_hyphen() -> None:
+    assert _extract_scientist_note(
+        "Crosslevel notes: Transfer the invariant mechanics."
+    )["cross_level_notes"] == "Transfer the invariant mechanics."
+
+
 def test_extract_labeled_blocks_does_not_match_label_prefix_inside_word() -> None:
     assert _extract_labeled_blocks(
         "World modelling note: this is ordinary prose.",
