@@ -187,6 +187,8 @@ def duck_kaggle_setup_command(config: DuckKaggleVllmConfig | None = None) -> str
         "__SPEC_EAGLE_TOPK__": repr(_kaggle_env("KAGGLE_SPEC_EAGLE_TOPK")),
         "__SPEC_NUM_DRAFT_TOKENS__": repr(_kaggle_env("KAGGLE_SPEC_NUM_DRAFT_TOKENS")),
         "__MAX_RUNNING_REQUESTS__": repr(_kaggle_env("KAGGLE_MAX_RUNNING_REQUESTS")),
+        "__LIMIT_MM_PER_REQUEST__": repr(_kaggle_env("KAGGLE_LIMIT_MM_DATA_PER_REQUEST")),
+        "__SERVER_START_TIMEOUT__": repr(int(_kaggle_env("KAGGLE_SERVER_START_TIMEOUT", "1800"))),
         # The vLLM argv hardcodes these three; SGLang needs them passed explicitly or the
         # agent silently gets no tool calls and no reasoning_content. Same values, and the
         # fallbacks matter because an unset config key exports as "" rather than absent.
@@ -271,6 +273,8 @@ SPEC_NUM_STEPS = __SPEC_NUM_STEPS__
 SPEC_EAGLE_TOPK = __SPEC_EAGLE_TOPK__
 SPEC_NUM_DRAFT_TOKENS = __SPEC_NUM_DRAFT_TOKENS__
 MAX_RUNNING_REQUESTS = __MAX_RUNNING_REQUESTS__
+LIMIT_MM_PER_REQUEST = __LIMIT_MM_PER_REQUEST__
+SERVER_START_TIMEOUT = __SERVER_START_TIMEOUT__
 TOOL_CALL_PARSER = __TOOL_CALL_PARSER__
 REASONING_PARSER = __REASONING_PARSER__
 DEFAULT_CHAT_TEMPLATE_KWARGS = __DEFAULT_CHAT_TEMPLATE_KWARGS__
@@ -466,6 +470,15 @@ def prepare_sglang_tree() -> Path:
     # is discovering the problem minutes later as an unexplained CUDA failure.
     import stat
     import tarfile
+    # The blob is a cp312 site-packages tree. Asserting that torch/_C.cpython-312*.so exists
+    # (below) proves something about the BLOB, not about the interpreter the notebook handed
+    # us -- taaf_kaggle_run.ipynb sets PYTHON = sys.executable. If Kaggle bumps the image,
+    # every extension module fails to import minutes later with no obvious cause.
+    assert sys.version_info[:2] == (3, 12), (
+        f'The SGLang blob is a cp312 tree but this interpreter is '
+        f'{sys.version_info.major}.{sys.version_info.minor}. The Kaggle base image changed; '
+        f'rebuild the blob before submitting.'
+    )
     blobs = sorted(
         (path for path in SGLANG_RUNTIME.rglob('*') if path.is_file() and path.stat().st_size > 1_000_000_000),
         key=lambda path: path.stat().st_size,
@@ -599,6 +612,12 @@ def start_sglang_server() -> None:
         ('--attention-backend', ATTENTION_BACKEND),
         ('--kv-cache-dtype', KV_CACHE_DTYPE),
         ('--max-running-requests', MAX_RUNNING_REQUESTS),
+        # SGLang applies NO per-request image cap unless this is passed, where vLLM 400'd
+        # past its limit. The agent keeps up to 30 assistant turns of history and attaches
+        # an image to each user turn, so requests vLLM rejected now succeed with a much
+        # larger multimodal prefill. Left unset by default (a 400 loses the turn outright);
+        # set kaggle.limit_mm_data_per_request to '{"image": 4}' to restore vLLM parity.
+        ('--limit-mm-data-per-request', LIMIT_MM_PER_REQUEST),
         ('--tool-call-parser', TOOL_CALL_PARSER),
         ('--reasoning-parser', REASONING_PARSER),
         ('--default-chat-template-kwargs', DEFAULT_CHAT_TEMPLATE_KWARGS),
@@ -624,12 +643,14 @@ def start_sglang_server() -> None:
                 cmd += [flag, str(value).strip()]
     elif SPEC_ALGORITHM:
         dropped.append('--speculative-algorithm')
-    if dropped:
-        print(f'WARNING: SGLang does not accept {dropped}; launching without them.', flush=True)
-    # Without a tool-call parser the agent gets zero tool calls on every turn, produces no
-    # action, and the run scores 0 while the server looks perfectly healthy. Fail now.
-    fatal = [flag for flag in ('--tool-call-parser', '--reasoning-parser') if flag in dropped]
-    assert not fatal, f'SGLang build does not accept {fatal}; the agent cannot emit actions.'
+    # Every flag in that list changes what the server actually does -- tool parsing, KV
+    # dtype, attention backend, MTP depth. Losing any of them either scores ~0 or runs
+    # multiples slower while /health stays green for nine hours, and the drop could equally
+    # be a miss in the --help regex above rather than a genuinely absent flag. Fail loudly.
+    assert not dropped, (
+        f'This SGLang build did not report {dropped} in its argument table. Launching '
+        f'without them would silently change what is served.'
+    )
     print('Starting SGLang server:', ' '.join(cmd), flush=True)
     process = subprocess.Popen(
         cmd, env=env, cwd='/tmp', stdout=log_handle, stderr=subprocess.STDOUT, text=True,
@@ -639,22 +660,29 @@ def start_sglang_server() -> None:
     )
     VLLM_SERVER_PID.write_text(str(process.pid), encoding='utf-8')
     SERVER_PGID_PATH.write_text(str(os.getpgid(process.pid)), encoding='utf-8')
-    wait_for_vllm_server()
+    # Explicit rather than the 900 s default: SGLang pays a cold triton JIT on top of
+    # loading 22.57 GB of NVFP4 weights off /kaggle/input. Measured ~340 s cold, but the
+    # default leaves little room, and dying here is unrecoverable.
+    wait_for_vllm_server(SERVER_START_TIMEOUT)
     assert_served_config()
 
 
 def assert_served_config() -> None:
     # An FP4 misconfiguration does not raise -- it produces fluent garbage. Check the
     # config the server actually resolved, not just that it answers /health.
-    try:
-        info = request_json(f'http://{VLLM_HOST}:{VLLM_PORT}/get_server_info', timeout=30)
-    except Exception as exc:
-        print(f'Could not read /get_server_info ({exc!r}); skipping served-config check.', flush=True)
-        return
+    # Raising here rather than skipping: this check exists precisely because an FP4 or KV
+    # misconfiguration does not announce itself, so an unreadable endpoint is a reason to
+    # stop, not a reason to proceed unchecked.
+    info = request_json(f'http://{VLLM_HOST}:{VLLM_PORT}/get_server_info', timeout=60)
     interesting = ('attention_backend', 'kv_cache_dtype', 'quantization', 'context_length',
                    'max_total_num_tokens', 'max_running_requests', 'mem_fraction_static',
                    'speculative_algorithm', 'speculative_num_steps')
     print('Served config: ' + json.dumps({k: info[k] for k in interesting if k in info}), flush=True)
+    missing = [key for key in ('attention_backend', 'kv_cache_dtype') if key not in info]
+    assert not missing, (
+        f'/get_server_info did not report {missing}, so the served config cannot be '
+        f'verified. Keys present: {sorted(info)}'
+    )
     expected = [('attention_backend', ATTENTION_BACKEND), ('kv_cache_dtype', KV_CACHE_DTYPE)]
     if SPEC_NUM_STEPS:
         expected.append(('speculative_num_steps', int(SPEC_NUM_STEPS)))

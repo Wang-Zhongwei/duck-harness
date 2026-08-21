@@ -95,6 +95,8 @@
     "sglang_blob_dataset_source": "jonathanwang2022/sglang-0517-sp-blob",
     "model_dataset_source": "jonathanwang2022/qwen38-27b-nvfp4-unsloth",
     "served_model_name": "Qwen/Qwen3.8-27B-NVFP4",
+    "limit_mm_data_per_request": "",
+    "server_start_timeout": 1800,
     "max_runtime_minutes": 71,
     "concurrent_jobs": 16,
     "analyzer_timeout": 400

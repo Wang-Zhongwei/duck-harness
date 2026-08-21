@@ -91,6 +91,8 @@ KAGGLE_SPEC_NUM_DRAFT_TOKENS ?= $(shell $(CONFIG_VALUE) kaggle.spec_num_draft_to
 SGLANG_BLOB_DATASET_SOURCE ?= $(shell $(CONFIG_VALUE) kaggle.sglang_blob_dataset_source)
 KAGGLE_MODEL_DATASET_SOURCE ?= $(shell $(CONFIG_VALUE) kaggle.model_dataset_source)
 KAGGLE_SERVED_MODEL_NAME ?= $(shell $(CONFIG_VALUE) kaggle.served_model_name)
+KAGGLE_LIMIT_MM_DATA_PER_REQUEST ?= $(shell $(CONFIG_VALUE) kaggle.limit_mm_data_per_request)
+KAGGLE_SERVER_START_TIMEOUT ?= $(shell $(CONFIG_VALUE) kaggle.server_start_timeout 1800)
 KAGGLE_MAX_RUNTIME_MINUTES ?= $(shell $(CONFIG_VALUE) kaggle.max_runtime_minutes 71)
 KAGGLE_CONCURRENT_JOBS ?= $(shell $(CONFIG_VALUE) kaggle.concurrent_jobs 16)
 KAGGLE_ANALYZER_TIMEOUT ?= $(shell $(CONFIG_VALUE) kaggle.analyzer_timeout 400)
@@ -251,6 +253,8 @@ export KAGGLE_SPEC_NUM_STEPS
 export KAGGLE_SPEC_EAGLE_TOPK
 export KAGGLE_SPEC_NUM_DRAFT_TOKENS
 export SGLANG_BLOB_DATASET_SOURCE
+export KAGGLE_LIMIT_MM_DATA_PER_REQUEST
+export KAGGLE_SERVER_START_TIMEOUT
 export KAGGLE_MODEL_DATASET_SOURCE
 export KAGGLE_SERVED_MODEL_NAME
 export CHAT_PROVIDER
