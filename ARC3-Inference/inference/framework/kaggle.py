@@ -12,6 +12,12 @@ DEFAULT_VLLM_WHEELHOUSE_DATASET_SOURCE = "driessmit1/arc3-vllm-h100-wheelhouse-v
 # silently fails to create a dataset from an archive of ~100k files.
 DEFAULT_SGLANG_BLOB_DATASET_SOURCE = "jonathanwang2022/sglang-0517-sp-blob"
 DEFAULT_QWEN_MODEL_DATASET_SOURCE = "jakobbrggen/qwen3-8-27b-fp8-hf-snapshot"
+# MEASURED BROKEN on sm_120 + SGLang 0.5.17, kernel sglang-quality-matrix: coherent for a
+# few tokens, then degenerate ("blue blue blue blue", empty \frac{}{} groups, dropped
+# function words). 5-gram diversity 0.109-0.385 across every NVFP4 row against 0.873-0.984
+# for FP8 on the same server. Independent of speculative decoding (turning it OFF made
+# NVFP4 worse, 0.031) and of KV dtype (bf16 did not help). Kept as a named constant so the
+# next person does not re-derive it: do not point the model dataset here.
 DEFAULT_QWEN_NVFP4_MODEL_DATASET_SOURCE = "jonathanwang2022/qwen38-27b-nvfp4-unsloth"
 DEFAULT_SERVED_MODEL_NAME = "Qwen/Qwen3.8-27B-FP8"
 DEFAULT_SERVED_MODEL_NAME_NVFP4 = "Qwen/Qwen3.8-27B-NVFP4"
@@ -92,8 +98,8 @@ def _model_dataset_source(cfg: DuckKaggleVllmConfig) -> str:
     override = _kaggle_env("KAGGLE_MODEL_DATASET_SOURCE")
     if override:
         return override
-    if _kaggle_backend() == "sglang":
-        return DEFAULT_QWEN_NVFP4_MODEL_DATASET_SOURCE
+    # NOT NVFP4, on either backend. The unsloth NVFP4 checkpoint decodes coherently for a
+    # few tokens and then degenerates -- see DEFAULT_QWEN_NVFP4_MODEL_DATASET_SOURCE.
     return cfg.model_dataset_source
 
 
@@ -101,8 +107,6 @@ def _served_model_name(cfg: DuckKaggleVllmConfig) -> str:
     override = _kaggle_env("KAGGLE_SERVED_MODEL_NAME")
     if override:
         return override
-    if _kaggle_backend() == "sglang":
-        return DEFAULT_SERVED_MODEL_NAME_NVFP4
     return cfg.served_model_name
 
 
