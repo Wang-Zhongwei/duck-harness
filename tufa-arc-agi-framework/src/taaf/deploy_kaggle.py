@@ -11,12 +11,14 @@ The launcher writes two Kaggle bundles under ``benchmark.job_dir``:
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import pickle
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 import unicodedata
 from collections.abc import Iterable
@@ -223,7 +225,8 @@ class KaggleTarget(taaf.deploy.DeploymentTarget):
                 f"slugified title={slugify(kernel_title)!r}."
             )
         dataset_ref = normalize_dataset_ref(
-            self.dataset_ref or f"{slugify(username)}/{DEFAULT_SOURCE_DATASET_SLUG}{share_suffix}"
+            self.dataset_ref
+            or f"{slugify(username)}/{_source_dataset_slug(kernel_slug)}{share_suffix}"
         )
         self.kernel_id = f"{slugify(username)}/{kernel_slug}"
         self.source_dataset_ref = dataset_ref
@@ -319,6 +322,66 @@ class KaggleTarget(taaf.deploy.DeploymentTarget):
             dataset_ref=dataset_ref,
             uploaded=self.uploaded,
         )
+
+
+KAGGLE_SLUG_MAX_LEN = 50
+
+
+def _bundle_content_hash(bundle_dir: Path) -> str:
+    """sha256 over every bundled file except the marker itself.
+
+    The marker carries a timestamp, so hashing it would make every bundle look
+    different and defeat the whole point. Paths are included so a rename counts
+    as a change, and walked in sorted order for determinism.
+    """
+    digest = hashlib.sha256()
+    for path in sorted(bundle_dir.rglob("*")):
+        if not path.is_file() or path.name == DATASET_BUNDLE_MARKER:
+            continue
+        digest.update(str(path.relative_to(bundle_dir)).encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _remote_bundle_hash(dataset_ref: str, *, username: str, key: str) -> str | None:
+    """Content hash recorded in the live dataset's marker, or None if unknown.
+
+    Returning None means "could not determine" and callers must fall back to
+    uploading -- never to skipping.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        result = subprocess.run(
+            ["kaggle", "datasets", "download", dataset_ref, "-f", DATASET_BUNDLE_MARKER, "-p", tmp, "--unzip"],
+            env=_kaggle_env(username, key), text=True, capture_output=True, check=False,
+        )
+        if result.returncode != 0:
+            return None
+        for candidate in Path(tmp).rglob(DATASET_BUNDLE_MARKER):
+            try:
+                return str(json.loads(candidate.read_text()).get("content_hash") or "") or None
+            except (json.JSONDecodeError, OSError):
+                return None
+    return None
+
+
+def _source_dataset_slug(kernel_slug: str) -> str:
+    """Per-notebook source-bundle slug.
+
+    Every notebook used to default to the single shared slug
+    ``taaf-kaggle-source``, so submitting notebook B overwrote notebook A's
+    bundle and older kernel versions silently pointed at content that had since
+    changed. Deriving the slug from the kernel slug gives each notebook its own
+    bundle and makes old versions reproducible.
+    """
+    stem = kernel_slug[len("taaf-"):] if kernel_slug.startswith("taaf-") else kernel_slug
+    slug = f"{DEFAULT_SOURCE_DATASET_SLUG}-{stem}"
+    if len(slug) > KAGGLE_SLUG_MAX_LEN:
+        # Truncating alone could collide; keep a short digest of the full name.
+        tag = hashlib.sha256(kernel_slug.encode()).hexdigest()[:8]
+        keep = KAGGLE_SLUG_MAX_LEN - len(tag) - 1
+        slug = f"{slug[:keep].rstrip('-')}-{tag}"
+    return slug
 
 
 def slugify(value: str) -> str:
@@ -514,10 +577,13 @@ def _write_source_dataset_bundle(
     (bundle_dir / DATASET_BUNDLE_MARKER).write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "created_at": datetime.now().isoformat(),
                 "benchmark_label": benchmark.label,
                 "notebook": notebook_name,
+                # Lets _ensure_dataset skip a no-op version push. Computed over
+                # every bundled file except this marker.
+                "content_hash": _bundle_content_hash(bundle_dir),
             },
             indent=2,
         )
@@ -652,6 +718,18 @@ def _replace_notebook_placeholders(text: str, replacements: dict[str, str]) -> s
 
 def _ensure_dataset(bundle_dir: Path, dataset_ref: str, message: str, username: str, key: str) -> None:
     exists = _dataset_exists(dataset_ref, username=username, key=key)
+    if exists:
+        # Don't burn a dataset version on an identical bundle. _remote_bundle_hash
+        # returns None when it can't tell, and we upload in that case -- an
+        # unnecessary version is cheap, a silently stale one is not.
+        local_hash = _bundle_content_hash(bundle_dir)
+        remote_hash = _remote_bundle_hash(dataset_ref, username=username, key=key)
+        if remote_hash and remote_hash == local_hash:
+            print(
+                f"Source bundle unchanged ({local_hash[:12]}); "
+                f"reusing {dataset_ref} without pushing a new version."
+            )
+            return
     # Capture the live version marker before the push so we can confirm the
     # new version actually went live (not just that status went "ready").
     before = _dataset_last_updated(dataset_ref, username=username, key=key) if exists else None
