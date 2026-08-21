@@ -748,71 +748,95 @@ def start_vllm_server() -> None:
     wait_for_vllm_server()
 
 
-def run_api_smoke_test() -> None:
-    # Three checks, because the two ways this fails in production are both silent. A
-    # server with no tool parser returns prose forever and the agent never acts; a server
-    # that cannot decode an image part 400s every turn. Both look healthy to /health.
-    # The timeout is generous: the first real request pays lazy triton JIT and autotune
-    # that the engine's own warmup does not cover.
-    print('\n' + '=' * 88, flush=True)
-    print('INFERENCE SERVER SMOKE TEST', flush=True)
+def smoke_request(messages, tools=None, timeout=900) -> dict:
+    # Deliberately NO max_tokens: analyzer.max_output is 0, so build_chat_payload omits it
+    # and production generations are bounded only by the context window. With the server's
+    # reasoning_effort=xhigh the model routinely spends thousands of tokens thinking, so a
+    # small cap truncates mid-thought and returns EMPTY content -- measured on this exact
+    # server by kernel sglang-prod-validate v1, where max_tokens=2048 gave finish_reason
+    # 'length' and empty content on every single request. A smoke test that capped output
+    # would fail here for a reason that cannot happen in production.
     payload = {
         'model': SERVED_MODEL_NAME,
-        'messages': [{'role': 'user', 'content': 'Answer in one short sentence: what is 2 + 2?'}],
+        'messages': messages,
+        'stream': False,
         'temperature': 0.0,
-        'max_tokens': 96,
-        'chat_template_kwargs': {'enable_thinking': False},
+        'top_p': 0.95,
+        'top_k': 20,
+        'chat_template_kwargs': {'enable_thinking': True},
     }
-    response = request_json(f'{VLLM_BASE_URL}/chat/completions', payload=payload, timeout=600)
-    generated = (response['choices'][0]['message'].get('content') or '').strip()
-    print('text        :', generated.replace('\n', ' ')[:200], flush=True)
-    # An FP4 misconfiguration produces fluent-looking garbage rather than an error, so
-    # check the answer, not just that bytes came back.
-    assert '4' in generated or 'four' in generated.lower(), (
+    if tools:
+        payload['tools'] = tools
+        payload['tool_choice'] = 'auto'
+    response = request_json(f'{VLLM_BASE_URL}/chat/completions', payload=payload, timeout=timeout)
+    choice = response['choices'][0]
+    message = choice['message']
+    return {
+        'content': (message.get('content') or '').strip(),
+        'reasoning': (message.get('reasoning_content') or '').strip(),
+        'tool_calls': message.get('tool_calls') or [],
+        'finish_reason': choice.get('finish_reason'),
+        'usage': response.get('usage') or {},
+    }
+
+
+def run_api_smoke_test() -> None:
+    # Three checks, because the two ways this fails in production are both silent. A server
+    # with no working tool parser returns prose forever and the agent never acts; a server
+    # that cannot decode an image part 400s every turn. Both look healthy to /health.
+    print('\n' + '=' * 88, flush=True)
+    print('INFERENCE SERVER SMOKE TEST', flush=True)
+    result = smoke_request([{'role': 'user', 'content': 'What is 17 times 3? Reply with the number.'}])
+    answer = result['content'] or result['reasoning']
+    print(f"text   : finish={result['finish_reason']} content={result['content'][:120]!r} "
+          f"reasoning_chars={len(result['reasoning'])}", flush=True)
+    # Check the ANSWER, not just that bytes came back: an FP4 or KV misconfiguration
+    # produces fluent garbage rather than an error. Reasoning counts -- the parser splits
+    # it out of content, and either one proves the model can still do arithmetic.
+    assert '51' in answer, (
         f'Model failed a trivial arithmetic prompt, which usually means a silently '
-        f'misconfigured quantization or KV dtype. Got: {generated!r}'
+        f'misconfigured quantization or KV dtype. finish_reason={result["finish_reason"]}, '
+        f'content={result["content"][:300]!r}, reasoning tail={result["reasoning"][-300:]!r}'
     )
-    tool_payload = {
-        'model': SERVED_MODEL_NAME,
-        'messages': [{'role': 'user', 'content': 'Press the button labelled ACTION3. Use the tool.'}],
-        'temperature': 0.0,
-        'max_tokens': 256,
-        'tools': [{
-            'type': 'function',
-            'function': {
-                'name': 'press_action',
-                'description': 'Press one of the game action buttons.',
-                'parameters': {
-                    'type': 'object',
-                    'properties': {'action': {'type': 'string', 'description': 'e.g. ACTION3'}},
-                    'required': ['action'],
-                },
+    tools = [{
+        'type': 'function',
+        'function': {
+            'name': 'take_action',
+            'description': 'Take one action in the ARC-AGI-3 game.',
+            'parameters': {
+                'type': 'object',
+                'properties': {'action': {'type': 'string', 'description': 'e.g. ACTION3'}},
+                'required': ['action'],
             },
-        }],
-        'tool_choice': 'auto',
-        'chat_template_kwargs': {'enable_thinking': False},
-    }
-    tool_response = request_json(f'{VLLM_BASE_URL}/chat/completions', payload=tool_payload, timeout=600)
-    tool_calls = tool_response['choices'][0]['message'].get('tool_calls') or []
-    print('tool_calls  :', json.dumps(tool_calls)[:300], flush=True)
-    assert tool_calls, (
-        'Server returned no tool_calls for an unambiguous tool prompt. The agent drives '
-        'the game entirely through tool calls, so this would score 0 on every game.'
+        },
+    }]
+    result = smoke_request(
+        [{'role': 'system', 'content': 'You play ARC-AGI-3. Always act via the take_action tool.'},
+         {'role': 'user', 'content': 'The level just started. Take ACTION3 now.'}],
+        tools=tools,
     )
-    image_payload = {
-        'model': SERVED_MODEL_NAME,
-        'messages': [{'role': 'user', 'content': [
-            {'type': 'text', 'text': 'Reply with one word describing this image.'},
-            {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + SMOKE_TEST_PNG_B64}},
-        ]}],
-        'temperature': 0.0,
-        'max_tokens': 64,
-        'chat_template_kwargs': {'enable_thinking': False},
-    }
-    image_response = request_json(f'{VLLM_BASE_URL}/chat/completions', payload=image_payload, timeout=600)
-    described = (image_response['choices'][0]['message'].get('content') or '').strip()
-    print('image       :', described.replace('\n', ' ')[:200], flush=True)
-    assert described, 'Server accepted an image part but returned empty content.'
+    print(f"tool   : finish={result['finish_reason']} tool_calls={json.dumps(result['tool_calls'])[:220]}", flush=True)
+    assert result['tool_calls'], (
+        f'Server returned no tool_calls for an unambiguous tool prompt. The agent drives '
+        f'the game entirely through tool calls, so this would score 0 on every game. '
+        f'finish_reason={result["finish_reason"]}, content={result["content"][:300]!r}'
+    )
+    result = smoke_request([{'role': 'user', 'content': [
+        {'type': 'text', 'text': 'Reply with one word describing this image.'},
+        {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + SMOKE_TEST_PNG_B64}},
+    ]}])
+    image_tokens = (result['usage'].get('prompt_tokens_details') or {}).get('image_tokens')
+    print(f"image  : finish={result['finish_reason']} image_tokens={image_tokens} "
+          f"content={result['content'][:120]!r}", flush=True)
+    assert result['content'] or result['reasoning'], (
+        'Server accepted an image part but returned nothing at all.'
+    )
+    # The agent attaches an image to every user turn, so a server that silently ignored the
+    # image would play blind while looking perfectly healthy.
+    assert image_tokens, (
+        f'The image part produced no image tokens ({result["usage"]}), so the server is not '
+        f'actually looking at the grid.'
+    )
     print('=' * 88 + '\n', flush=True)
 
 
