@@ -632,11 +632,14 @@ def start_sglang_server() -> None:
         ('--attention-backend', ATTENTION_BACKEND),
         ('--kv-cache-dtype', KV_CACHE_DTYPE),
         ('--max-running-requests', MAX_RUNNING_REQUESTS),
-        # SGLang applies NO per-request image cap unless this is passed, where vLLM 400'd
-        # past its limit. The agent keeps up to 30 assistant turns of history and attaches
-        # an image to each user turn, so requests vLLM rejected now succeed with a much
-        # larger multimodal prefill. Left unset by default (a 400 loses the turn outright);
-        # set kaggle.limit_mm_data_per_request to '{"image": 4}' to restore vLLM parity.
+        # LEAVE THIS UNSET on a branch that does not strip images from persisted history.
+        # MEASURED (kernel taaf-qwen38-fp8-sglang): setting '{"image": 4}' for parity with
+        # the vLLM runs produced 82,135 rejections -- "Image count 5 exceeds limit 4 per
+        # request" -- from action 3 onward, and a score of 0. This agent keeps up to 30
+        # assistant turns and attaches an image to every user turn, so the count passes 4
+        # almost immediately. `main` strips history images and can afford the cap; the
+        # upstream baseline cannot. Note also that every throughput and quality number in
+        # REPORT.md was measured with NO cap, so setting one is an unmeasured deviation.
         ('--limit-mm-data-per-request', LIMIT_MM_PER_REQUEST),
         ('--tool-call-parser', TOOL_CALL_PARSER),
         ('--reasoning-parser', REASONING_PARSER),
