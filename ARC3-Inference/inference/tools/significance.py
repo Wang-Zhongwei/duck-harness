@@ -180,15 +180,15 @@ def _resolve_int_setting(
 
 def _resolve_score_path(path: Path) -> Path:
     if path.is_dir():
+        eval_path = path / EVAL_FILE_NAME
+        if eval_path.exists():
+            return eval_path
         score_path = path / SCORE_FILE_NAME
         if score_path.exists():
             return score_path
         legacy_score_path = path / LEGACY_SCORE_FILE_NAME
         if legacy_score_path.exists():
             return legacy_score_path
-        eval_path = path / EVAL_FILE_NAME
-        if eval_path.exists():
-            return eval_path
         legacy_eval_path = path / LEGACY_EVAL_FILE_NAME
         if legacy_eval_path.exists():
             return legacy_eval_path

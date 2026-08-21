@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from inference.tools.score_registry import load_score_registry
-from inference.utils.run_artifacts import is_selectable_run_dir_name
+from inference.utils.run_artifacts import is_selectable_run_dir_name, run_dir_sort_key
 from viewer.data import list_run_dirs
 from viewer.data import load_game_payload, load_game_shell_payload, load_game_step_payload, load_run_summary
 
@@ -49,10 +49,8 @@ def _load_comparison_payload(runs_dir: Path) -> dict:
         for run_id, entry in runs.items()
         if str(run_id) in eligible
     }
-    order = [str(run_id) for run_id in payload.get("run_order", [])]
     payload["runs"] = retained
-    payload["run_order"] = [run_id for run_id in order if run_id in retained]
-    payload["run_order"].extend(sorted(set(retained) - set(payload["run_order"])))
+    payload["run_order"] = sorted(retained, key=run_dir_sort_key, reverse=True)
     return payload
 
 

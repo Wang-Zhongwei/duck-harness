@@ -67,7 +67,7 @@ def ensure_evaluation_files(run_dirs: list[Path]) -> list[Path]:
     generated_paths: list[Path] = []
     for run_dir in missing_run_dirs:
         summary = eval_tool.evaluate_runs([run_dir])
-        generated_paths.extend(eval_tool.save_run_evaluations(summary, run_dirs=[run_dir]))
+        generated_paths.append(eval_tool.save_evaluation_file(summary, run_dirs=[run_dir]))
     return generated_paths
 
 
@@ -108,12 +108,14 @@ def summarize_runs(run_dirs: list[Path]) -> PlotSummary:
 
     for run_dir in run_dirs:
         payload = _load_evaluation(run_dir)
-        run_name = str(payload.get("run_name") or run_dir.name)
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        run_name = str((metadata.get("run_names") or [run_dir.name])[0])
         run_names.append(run_name)
-        for game_payload in payload.get("games", []):
+        games = payload.get("games") if isinstance(payload.get("games"), dict) else {}
+        for game_id, game_payload in games.items():
             if not isinstance(game_payload, dict):
                 continue
-            game_id = str(game_payload.get("game_id") or "").strip()
+            game_id = str(game_id).strip()
             if not game_id:
                 continue
             try:

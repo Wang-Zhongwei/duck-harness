@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := interactive
 
-.PHONY: install install-local-sources prepare-ci server stop-server check-server interactive sbatch kaggle-duck run _taaf-run chat eval score_run pull_semi_private_score refresh_frontier_scores significance view trace traces zip clean cluster_view_queue
+.PHONY: install install-local-sources prepare-ci server stop-server check-server interactive sbatch kaggle-duck run _taaf-run chat eval evaluate_run pull_semi_private_score refresh_frontier_scores significance view trace traces zip clean cluster_view_queue
 
 -include .env
 
@@ -198,8 +198,8 @@ CHAT_SYSTEM ?=
 PROMPT ?=
 
 EVAL_CONFIG_PATH ?= configs/eval.json
-SCORE_OUTPUT_PATH ?=
-SCORE_RUN_DIR ?=
+EVALUATION_OUTPUT_PATH ?=
+EVALUATE_RUN_DIR ?=
 SCORE_REGISTRY_PATH ?= $(RUNS_DIR)/inference_score_comparison.json
 SEMI_PRIVATE_SCORE_SOURCE ?=
 KAGGLE_COMPETITION ?= arc-prize-2026-arc-agi-3
@@ -553,14 +553,14 @@ chat:
 		$(if $(PROMPT),--prompt "$(PROMPT)")
 
 eval:
-	$(UV_RUN) inference-eval --config "$(EVAL_CONFIG_PATH)" $(if $(SCORE_OUTPUT_PATH),--score-output "$(SCORE_OUTPUT_PATH)")
+	$(UV_RUN) inference-eval --config "$(EVAL_CONFIG_PATH)" $(if $(EVALUATION_OUTPUT_PATH),--evaluation-output "$(EVALUATION_OUTPUT_PATH)")
 
-score_run:
-	@if [ -z "$(strip $(SCORE_RUN_DIR))" ]; then \
-		echo "SCORE_RUN_DIR is required."; \
+evaluate_run:
+	@if [ -z "$(strip $(EVALUATE_RUN_DIR))" ]; then \
+		echo "EVALUATE_RUN_DIR is required."; \
 		exit 1; \
 	fi
-	$(UV_RUN) inference-eval "$(SCORE_RUN_DIR)" $(if $(SCORE_OUTPUT_PATH),--score-output "$(SCORE_OUTPUT_PATH)")
+	$(UV_RUN) inference-eval "$(EVALUATE_RUN_DIR)" $(if $(EVALUATION_OUTPUT_PATH),--evaluation-output "$(EVALUATION_OUTPUT_PATH)")
 
 
 pull_semi_private_score:

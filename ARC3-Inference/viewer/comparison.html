@@ -717,8 +717,8 @@
     function populateSelectors() {
       const order = registry.run_order || Object.keys(registry.runs);
       if (order.length < 2) throw new Error("At least two post-2026-08-10 scored runs are required.");
-      baselineId = order[order.length - 2];
-      candidateId = order[order.length - 1];
+      baselineId = order[1];
+      candidateId = order[0];
       const options = order.map((runId) =>
         '<option value="' + escapeHtml(runId) + '">' + escapeHtml(runLabel(runId)) + '</option>'
       ).join("");

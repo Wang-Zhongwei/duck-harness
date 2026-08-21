@@ -103,7 +103,7 @@ def _is_auto_selectable_run_dir(path: Path) -> bool:
         path.is_dir()
         and is_selectable_run_dir_name(path.name)
         and path.name[:8] >= DEFAULT_MINIMUM_RUN_DATE
-        and bool(_viewer_data_paths(path))
+        and (bool(_viewer_data_paths(path)) or (path / "evaluation.json").is_file())
     )
 
 

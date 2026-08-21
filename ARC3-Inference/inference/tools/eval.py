@@ -28,7 +28,6 @@ RUN_CONFIG_FILENAME = "run_config.json"
 BENCHMARK_FILE_NAME = "benchmark.json"
 EVALUATION_FILE_NAME = "evaluation.json"
 LEGACY_EVALUATION_FILE_NAME = "eval_official.json"
-SCORE_FILE_NAME = "score.json"
 TRANSCRIPTS_DIR_NAME = "transcripts"
 ARTIFACTS_DIR_NAME = "artifacts"
 TRANSCRIPT_TURN_PREFIX = "--- analysis_step="
@@ -327,15 +326,15 @@ def _default_dataset_description(*, dataset: Any, include_tags: Any, game_count:
     return ""
 
 
-def _default_score_output_path(run_dirs: list[Path]) -> Path:
+def _default_evaluation_output_path(run_dirs: list[Path]) -> Path:
     if len(run_dirs) == 1:
-        return run_dirs[0] / SCORE_FILE_NAME
+        return run_dirs[0] / EVALUATION_FILE_NAME
     experiment_dirs = [_experiment_dir_for_trial(run_dir) for run_dir in run_dirs]
     first_experiment_dir = experiment_dirs[0] if experiment_dirs else None
     if first_experiment_dir is not None and all(path == first_experiment_dir for path in experiment_dirs):
-        return first_experiment_dir / SCORE_FILE_NAME
+        return first_experiment_dir / EVALUATION_FILE_NAME
     root = run_dirs[0].parent if run_dirs else Path("runs")
-    return root / SCORE_FILE_NAME
+    return root / EVALUATION_FILE_NAME
 
 
 def _score_source_label(sources: list[str]) -> str:
@@ -681,96 +680,6 @@ def evaluate_runs(run_dirs: list[Path], *, environments_dir: str | None = None) 
     )
 
 
-def _aggregate_runs_for_output(run_name: str, runs: list[RunEvaluation]) -> dict[str, Any]:
-    game_ids: list[str] = []
-    for run in runs:
-        for game in run.games:
-            if game.game_id not in game_ids:
-                game_ids.append(game.game_id)
-
-    games: list[dict[str, Any]] = []
-    for game_id in game_ids:
-        trial_games = [
-            game
-            for run in runs
-            for game in run.games
-            if game.game_id == game_id
-        ]
-        total_levels = max((game.total_levels for game in trial_games), default=0)
-        levels_completed_mean = _mean([game.levels_completed for game in trial_games])
-        completion_rate = (
-            _mean([
-                game.levels_completed / game.total_levels
-                for game in trial_games
-                if game.total_levels > 0
-            ])
-            if trial_games
-            else 0.0
-        )
-        games.append(
-            {
-                "game_id": game_id,
-                "score": _mean([game.score for game in trial_games]),
-                "levels_completed": levels_completed_mean,
-                "levels_completed_mean": levels_completed_mean,
-                "total_levels": total_levels,
-                "completion_rate": completion_rate,
-                "trial_count": len(trial_games),
-                "score_source": _score_source_label([game.score_source for game in trial_games]),
-                "actions": sum(game.action_count for game in trial_games),
-                "turns": _sum_optional([game.turn_count for game in trial_games]),
-                "generated_tokens": sum(game.generated_tokens for game in trial_games),
-                "uncached_input_tokens": sum(game.uncached_input_tokens for game in trial_games),
-                "total_tokens": sum(game.total_tokens for game in trial_games),
-                "actions_mean": _mean([float(game.action_count) for game in trial_games]),
-                "turns_mean": _mean_optional([game.turn_count for game in trial_games]),
-                "total_tokens_mean": _mean([float(game.total_tokens) for game in trial_games]),
-            }
-        )
-
-    all_games = [game for run in runs for game in run.games]
-    return {
-        "run_name": run_name,
-        "score": _mean([game["score"] for game in games]) if games else _mean([run.score for run in runs]),
-        "usage": {
-            "actions": sum(game.action_count for game in all_games),
-            "turns": _sum_optional([game.turn_count for game in all_games]),
-            "generated_tokens": sum(game.generated_tokens for game in all_games),
-            "uncached_input_tokens": sum(game.uncached_input_tokens for game in all_games),
-            "total_tokens": sum(game.total_tokens for game in all_games),
-        },
-        "trials": {run.run_name: run.usage() for run in runs},
-        "score_source": _score_source_label(
-            [
-                game.score_source
-                for run in runs
-                for game in run.games
-            ]
-        ),
-        "games": games,
-    }
-
-
-def save_run_evaluations(summary: EvaluationSummary, *, run_dirs: list[Path]) -> list[Path]:
-    saved_paths: list[Path] = []
-    trial_dirs = _expand_run_dirs(run_dirs) or run_dirs
-    for run_dir in trial_dirs:
-        base_run_name = _trial_run_name(run_dir)
-        relevant_runs = [
-            run
-            for run in summary.runs
-            if run.run_name == base_run_name or run.run_name.startswith(f"{base_run_name}/pass-")
-        ]
-        if not relevant_runs:
-            continue
-        output_path = run_dir / EVALUATION_FILE_NAME
-        output_path.write_text(
-            json.dumps(_aggregate_runs_for_output(base_run_name, relevant_runs), indent=2),
-            encoding="utf-8",
-        )
-        saved_paths.append(output_path)
-    return saved_paths
-
 
 def _hardware_metadata(configs: list[dict[str, Any]]) -> dict[str, Any]:
     raw_hardware = _common_metadata_value(configs, "hardware")
@@ -783,7 +692,7 @@ def _hardware_metadata(configs: list[dict[str, Any]]) -> dict[str, Any]:
     return {"gpu_type": str(gpu).lower(), "gpu_count": int(gpu_count or 1)}
 
 
-def build_score_payload(summary: EvaluationSummary, *, run_dirs: list[Path]) -> dict[str, Any]:
+def build_evaluation_payload(summary: EvaluationSummary, *, run_dirs: list[Path]) -> dict[str, Any]:
     trial_dirs = _completed_trial_dirs(run_dirs)
     configs = [_load_run_config(run_dir) for run_dir in trial_dirs]
     game_ids = [game.game_id for game in summary.games]
@@ -821,6 +730,10 @@ def build_score_payload(summary: EvaluationSummary, *, run_dirs: list[Path]) -> 
             trial_game.run_name: trial_game.uncached_input_tokens for trial_game in trial_games
         }
         total_tokens = {trial_game.run_name: trial_game.total_tokens for trial_game in trial_games}
+        states = {trial_game.run_name: trial_game.state for trial_game in trial_games}
+        score_sources = {
+            trial_game.run_name: trial_game.score_source for trial_game in trial_games
+        }
         tokens_per_action = {
             trial_game.run_name: (
                 trial_game.total_tokens / trial_game.action_count
@@ -842,8 +755,8 @@ def build_score_payload(summary: EvaluationSummary, *, run_dirs: list[Path]) -> 
             "score": game.average_score,
             "trial_scores": trial_scores,
             "trial_count": len(trial_scores),
-            "seed_scores": trial_scores,
-            "seed_count": len(trial_scores),
+            "states": states,
+            "score_sources": score_sources,
             "levels_completed": levels_completed,
             "levels_completed_mean": _mean([float(value) for value in levels_completed.values()]),
             "total_levels": max((trial_game.total_levels for trial_game in trial_games), default=0),
@@ -908,7 +821,7 @@ def build_score_payload(summary: EvaluationSummary, *, run_dirs: list[Path]) -> 
     }
 
     return {
-        "version": 3,
+        "version": 4,
         "score": summary.overall_score,
         "games": games,
         # Serving-side metrics recovered from each trial's vLLM server.log.
@@ -954,9 +867,6 @@ def build_score_payload(summary: EvaluationSummary, *, run_dirs: list[Path]) -> 
             "trials": known_trials,
             "trial_labels": [run.run_name for run in summary.runs],
             "trials_available": bool(summary.runs),
-            "seeds": known_trials,
-            "seed_labels": [run.run_name for run in summary.runs],
-            "seeds_available": bool(known_trials),
             "game_count": len(game_ids),
             "trial_count": trial_count,
             "model": _common_metadata_value(configs, "model"),
@@ -985,16 +895,16 @@ def build_score_payload(summary: EvaluationSummary, *, run_dirs: list[Path]) -> 
     }
 
 
-def save_score_file(
+def save_evaluation_file(
     summary: EvaluationSummary,
     *,
     run_dirs: list[Path],
     output_path: str | Path | None = None,
 ) -> Path:
     trial_dirs = _expand_run_dirs(run_dirs)
-    path = Path(output_path) if output_path else _default_score_output_path(run_dirs if len(run_dirs) == 1 else trial_dirs)
+    path = Path(output_path) if output_path else _default_evaluation_output_path(run_dirs if len(run_dirs) == 1 else trial_dirs)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = build_score_payload(summary, run_dirs=run_dirs)
+    payload = build_evaluation_payload(summary, run_dirs=run_dirs)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     if len(run_dirs) == 1:
         update_score_registry(score_payload=payload, score_path=path)
@@ -1102,9 +1012,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("run_dirs", nargs="*", help="Optional run directory or directories to evaluate directly.")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH, help=f"Path to eval JSON config (default: {DEFAULT_CONFIG_PATH}).")
     parser.add_argument(
-        "--score-output",
+        "--evaluation-output",
         default="",
-        help="Optional path for the lightweight aggregate score JSON.",
+        help="Optional path for the consolidated evaluation JSON.",
     )
     return parser.parse_args(argv)
 
@@ -1130,11 +1040,10 @@ def main(argv: list[str] | None = None) -> int:
             raise FileNotFoundError(f"Configured run directory does not exist: {run_dir}")
 
     summary = evaluate_runs(run_dirs)
-    save_run_evaluations(summary, run_dirs=run_dirs)
-    score_output = args.score_output or str(config.get("score_output") or "")
-    score_path = save_score_file(summary, run_dirs=run_dirs, output_path=score_output or None)
+    evaluation_output = args.evaluation_output or str(config.get("evaluation_output") or "")
+    evaluation_path = save_evaluation_file(summary, run_dirs=run_dirs, output_path=evaluation_output or None)
     print(render_evaluation(summary))
-    print(f"\nScore file: {score_path}")
+    print(f"\nEvaluation file: {evaluation_path}")
     return 0
 
 

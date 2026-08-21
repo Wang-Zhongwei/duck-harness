@@ -16,13 +16,16 @@ def test_auto_selection_uses_latest_displayable_qwen38_era_run(tmp_path: Path) -
     first_qwen38_run = tmp_path / "20260810_000000_q38"
     latest_displayable_run = tmp_path / "20260818_195342_q38"
     empty_newer_run = tmp_path / "20260819_062601_q38"
+    evaluated_run = tmp_path / "20260820_081324_q38"
 
     for run_dir in (old_run, first_qwen38_run, latest_displayable_run):
         _write_viewer_artifact(run_dir)
     empty_newer_run.mkdir()
+    evaluated_run.mkdir()
+    (evaluated_run / "evaluation.json").write_text("{}", encoding="utf-8")
 
-    assert list_run_dirs(tmp_path) == [latest_displayable_run, first_qwen38_run]
-    assert find_latest_run_dir(tmp_path) == latest_displayable_run
+    assert list_run_dirs(tmp_path) == [evaluated_run, latest_displayable_run, first_qwen38_run]
+    assert find_latest_run_dir(tmp_path) == evaluated_run
 
 
 def test_explicit_run_directory_remains_available_as_override(tmp_path: Path) -> None:
@@ -76,5 +79,12 @@ def test_comparison_payload_uses_evaluated_homepage_runs(tmp_path: Path) -> None
 
     payload = _load_comparison_payload(runs_dir)
 
-    assert payload["run_order"] == [first_qwen38_run, latest_qwen38_run]
-    assert set(payload["runs"]) == {first_qwen38_run, latest_qwen38_run}
+    assert payload["run_order"] == [latest_qwen38_run, distill_run, first_qwen38_run]
+    assert set(payload["runs"]) == {first_qwen38_run, distill_run, latest_qwen38_run}
+
+
+def test_comparison_defaults_to_previous_run_and_newest_run() -> None:
+    html = (Path(__file__).parents[1] / "viewer" / "comparison.html").read_text(encoding="utf-8")
+
+    assert "baselineId = order[1];" in html
+    assert "candidateId = order[0];" in html
