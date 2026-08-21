@@ -194,6 +194,10 @@ def duck_kaggle_setup_command(config: DuckKaggleVllmConfig | None = None) -> str
         "__SMOKE_TOP_P__": repr(float(os.environ.get("LOCAL_ANALYZER_TOP_P") or 0.95)),
         "__SMOKE_TOP_K__": repr(int(os.environ.get("LOCAL_ANALYZER_TOP_K") or 20)),
         "__SMOKE_MAX_TOKENS__": repr(int(_kaggle_env("KAGGLE_SMOKE_MAX_TOKENS", "2048"))),
+        # Must be <= the analyzer timeout: a generation slower than that is already fatal
+        # in production, so there is nothing to be gained by waiting longer here.
+        "__UNBOUNDED_SMOKE_TIMEOUT__": repr(int(_kaggle_env("KAGGLE_UNBOUNDED_SMOKE_TIMEOUT", "300"))),
+        "__ANALYZER_TIMEOUT_HINT__": repr(os.environ.get("ANALYZER_TIMEOUT", "400")),
         "__SERVER_START_TIMEOUT__": repr(int(_kaggle_env("KAGGLE_SERVER_START_TIMEOUT", "1800"))),
         # The vLLM argv hardcodes these three; SGLang needs them passed explicitly or the
         # agent silently gets no tool calls and no reasoning_content. Same values, and the
@@ -284,6 +288,8 @@ SMOKE_TEMPERATURE = __SMOKE_TEMPERATURE__
 SMOKE_TOP_P = __SMOKE_TOP_P__
 SMOKE_TOP_K = __SMOKE_TOP_K__
 SMOKE_MAX_TOKENS = __SMOKE_MAX_TOKENS__
+UNBOUNDED_SMOKE_TIMEOUT = __UNBOUNDED_SMOKE_TIMEOUT__
+ANALYZER_TIMEOUT_HINT = __ANALYZER_TIMEOUT_HINT__
 SERVER_START_TIMEOUT = __SERVER_START_TIMEOUT__
 TOOL_CALL_PARSER = __TOOL_CALL_PARSER__
 REASONING_PARSER = __REASONING_PARSER__
@@ -758,7 +764,9 @@ def start_vllm_server() -> None:
     wait_for_vllm_server()
 
 
-def smoke_request(messages, tools=None, tool_choice='auto', timeout=300) -> dict:
+def smoke_request(messages, tools=None, tool_choice='auto', timeout=300,
+                  max_tokens=-1) -> dict:
+    max_tokens = SMOKE_MAX_TOKENS if max_tokens == -1 else max_tokens
     # Sampling MUST match what the agent sends. A previous revision hardcoded
     # temperature 0.0 and the very first smoke request -- "what is 17 times 3?" --
     # ran away into a repetition loop: 46,118 generated tokens and still going when the
@@ -773,11 +781,13 @@ def smoke_request(messages, tools=None, tool_choice='auto', timeout=300) -> dict
         'temperature': SMOKE_TEMPERATURE,
         'top_p': SMOKE_TOP_P,
         'top_k': SMOKE_TOP_K,
-        # Bounded, unlike production, purely so a runaway can never hang setup. Truncation
-        # is therefore EXPECTED and is treated as inconclusive below, never as failure.
-        'max_tokens': SMOKE_MAX_TOKENS,
+        # Bounded by default, unlike production, purely so a runaway cannot hang setup.
+        # Truncation is therefore EXPECTED and treated as inconclusive, never as failure.
+        # max_tokens=None asks for the genuine production shape (see the termination check).
         'chat_template_kwargs': {'enable_thinking': False},
     }
+    if max_tokens:
+        payload['max_tokens'] = max_tokens
     if tools:
         payload['tools'] = tools
         payload['tool_choice'] = tool_choice
@@ -870,6 +880,37 @@ def run_api_smoke_test() -> None:
     assert result['image_tokens'] > 0, (
         f'The image part produced no image tokens ({result["usage"]}), so the server is not '
         f'actually looking at the grid and the agent would play blind.'
+    )
+    # THE check a bounded smoke test structurally cannot make. Every request above caps
+    # max_tokens, so every one of them returns; production sends no cap at all, so a model
+    # that never emits EOS runs toward the 65,536-token context limit -- about 31 minutes
+    # at the ~35 tok/s this server decodes at -- and every turn dies on the analyzer's
+    # 400 s timeout having recorded nothing. That is a score of exactly 0 with a server
+    # that answers /health, passes every bounded check above, and looks entirely well.
+    # Measured, kernel taaf-qwen38-nvfp4-sglang: 'analyzer request failed at action 1:
+    # Read timed out. (read timeout=400.0)' on a config whose bounded checks all passed.
+    print('unbounded: checking that generation TERMINATES (no max_tokens, as production)',
+          flush=True)
+    started = time.time()
+    try:
+        result = smoke_request(
+            [{'role': 'user', 'content': 'Explain in two sentences what a checkerboard is.'}],
+            max_tokens=None, timeout=UNBOUNDED_SMOKE_TIMEOUT,
+        )
+    except Exception as exc:
+        raise AssertionError(
+            f'An unbounded generation did not finish within {UNBOUNDED_SMOKE_TIMEOUT}s '
+            f'({exc!r}). Production sends no max_tokens and the analyzer gives up after '
+            f'{ANALYZER_TIMEOUT_HINT}s, so every turn would time out and the run would '
+            f'score 0. This is what a degenerate repetition loop looks like from here.'
+        ) from None
+    elapsed = time.time() - started
+    print(f"unbound: finish={result['finish_reason']} seconds={elapsed:.0f} "
+          f"tokens={result['usage'].get('completion_tokens')} "
+          f"content={result['content'][:150]!r}", flush=True)
+    assert result['finish_reason'] == 'stop', (
+        f'Unbounded generation ended with finish_reason={result["finish_reason"]!r} after '
+        f'{result["usage"].get("completion_tokens")} tokens rather than stopping on its own.'
     )
     print('=' * 88 + '\n', flush=True)
 
