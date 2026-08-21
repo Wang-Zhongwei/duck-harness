@@ -76,6 +76,24 @@ KAGGLE_USERNAME ?=
 KAGGLE_KERNEL_SLUG ?= $(if $(strip $(RUN_NAME)),taaf-$(RUN_NAME)$(if $(filter true TRUE 1 yes YES on ON,$(KAGGLE_MAKE_SHARE_VERSION)),-share),)
 KAGGLE_KERNEL_TITLE ?=
 KAGGLE_DATASET_REF ?=
+# Kaggle-only engine knobs, read by inference/framework/kaggle.py. Deliberately NOT the
+# SERVER_* names: SERVER_BACKEND gates the local `server:` target, which only knows how
+# to launch vLLM, so reusing it would break `make server` and every sbatch run.
+KAGGLE_SERVER_BACKEND ?= $(shell $(CONFIG_VALUE) kaggle.backend vllm)
+KAGGLE_ATTENTION_BACKEND ?= $(shell $(CONFIG_VALUE) kaggle.attention_backend)
+KAGGLE_KV_CACHE_DTYPE ?= $(shell $(CONFIG_VALUE) kaggle.kv_cache_dtype)
+KAGGLE_MAX_RUNNING_REQUESTS ?= $(shell $(CONFIG_VALUE) kaggle.max_running_requests)
+# vLLM takes one --speculative-config JSON blob; SGLang wants four separate flags.
+KAGGLE_SPEC_ALGORITHM ?= $(shell $(CONFIG_VALUE) kaggle.spec_algorithm)
+KAGGLE_SPEC_NUM_STEPS ?= $(shell $(CONFIG_VALUE) kaggle.spec_num_steps)
+KAGGLE_SPEC_EAGLE_TOPK ?= $(shell $(CONFIG_VALUE) kaggle.spec_eagle_topk)
+KAGGLE_SPEC_NUM_DRAFT_TOKENS ?= $(shell $(CONFIG_VALUE) kaggle.spec_num_draft_tokens)
+SGLANG_BLOB_DATASET_SOURCE ?= $(shell $(CONFIG_VALUE) kaggle.sglang_blob_dataset_source)
+KAGGLE_MODEL_DATASET_SOURCE ?= $(shell $(CONFIG_VALUE) kaggle.model_dataset_source)
+KAGGLE_SERVED_MODEL_NAME ?= $(shell $(CONFIG_VALUE) kaggle.served_model_name)
+KAGGLE_MAX_RUNTIME_MINUTES ?= $(shell $(CONFIG_VALUE) kaggle.max_runtime_minutes 71)
+KAGGLE_CONCURRENT_JOBS ?= $(shell $(CONFIG_VALUE) kaggle.concurrent_jobs 16)
+KAGGLE_ANALYZER_TIMEOUT ?= $(shell $(CONFIG_VALUE) kaggle.analyzer_timeout 400)
 KAGGLE_ADDITIONAL_DATASET_SOURCES ?=
 KAGGLE_PUBLIC ?= false
 KAGGLE_ENABLE_INTERNET ?= false
@@ -219,6 +237,22 @@ export MULTIMODAL_UPSCALE
 # from the environment. Without the export, JSON server.speculative_config would
 # apply on the local/slurm path only and silently not on Kaggle.
 export SERVER_SPECULATIVE_CONFIG
+# Same reason: kaggle.py has to pass these to SGLang explicitly. Without a tool-call
+# parser the agent gets prose instead of actions and every game scores 0.
+export SERVER_TOOL_CALL_PARSER
+export SERVER_REASONING_PARSER
+export SERVER_DEFAULT_CHAT_TEMPLATE_KWARGS
+export KAGGLE_SERVER_BACKEND
+export KAGGLE_ATTENTION_BACKEND
+export KAGGLE_KV_CACHE_DTYPE
+export KAGGLE_MAX_RUNNING_REQUESTS
+export KAGGLE_SPEC_ALGORITHM
+export KAGGLE_SPEC_NUM_STEPS
+export KAGGLE_SPEC_EAGLE_TOPK
+export KAGGLE_SPEC_NUM_DRAFT_TOKENS
+export SGLANG_BLOB_DATASET_SOURCE
+export KAGGLE_MODEL_DATASET_SOURCE
+export KAGGLE_SERVED_MODEL_NAME
 export CHAT_PROVIDER
 export OPENROUTER_API_KEY
 export OPENAI_API_KEY
@@ -413,12 +447,18 @@ kaggle-duck: GAME_TAGS =
 kaggle-duck: EXCLUDE_GAME_TAGS =
 kaggle-duck: MODEL = local
 kaggle-duck: RUN_NAME = duck-harness-kaggle
-kaggle-duck: MAX_RUNTIME_MINUTES = 75
+# 110 games / 16 concurrent = 7 rounds, and every Kaggle game to date burns its full
+# per-game cap, so the games alone cost 7 x MAX_RUNTIME_MINUTES. Kaggle's 9-hour kill is
+# ungraceful and makes the commit ineligible to submit, and the 540 below is never
+# enforced by the harness on a real submission (_soft_end_time returns None), so the
+# per-game cap is the only real throttle. 7 x 71 = 497 leaves ~40 min for engine start
+# (~7 min cold) and the arcade gateway wait.
+kaggle-duck: MAX_RUNTIME_MINUTES = $(KAGGLE_MAX_RUNTIME_MINUTES)
 kaggle-duck: MAX_EXPERIMENT_RUNTIME_MINUTES = 540
 kaggle-duck: MAX_EXPERIMENT_RUNTIME_HOURS =
 kaggle-duck: N_PASSES = 1
-kaggle-duck: CONCURRENT_JOBS = 16
-kaggle-duck: ANALYZER_TIMEOUT = 400
+kaggle-duck: CONCURRENT_JOBS = $(KAGGLE_CONCURRENT_JOBS)
+kaggle-duck: ANALYZER_TIMEOUT = $(KAGGLE_ANALYZER_TIMEOUT)
 kaggle-duck: _taaf-run
 
 _taaf-run:

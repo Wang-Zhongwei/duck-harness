@@ -83,6 +83,22 @@
     "top_k": 20,
     "thinking": true
   },
+  "kaggle": {
+    "backend": "sglang",
+    "attention_backend": "triton",
+    "kv_cache_dtype": "fp8_e4m3",
+    "max_running_requests": 48,
+    "spec_algorithm": "EAGLE",
+    "spec_num_steps": 3,
+    "spec_eagle_topk": 1,
+    "spec_num_draft_tokens": 4,
+    "sglang_blob_dataset_source": "jonathanwang2022/sglang-0517-sp-blob",
+    "model_dataset_source": "jonathanwang2022/qwen38-27b-nvfp4-unsloth",
+    "served_model_name": "Qwen/Qwen3.8-27B-NVFP4",
+    "max_runtime_minutes": 71,
+    "concurrent_jobs": 16,
+    "analyzer_timeout": 400
+  },
   "viewer": {
     "port": 8021
   },
