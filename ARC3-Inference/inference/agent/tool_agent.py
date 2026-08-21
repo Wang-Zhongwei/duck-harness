@@ -412,7 +412,6 @@ class _PendingLevelTransition:
     completed_history: list[HistoryEntry]
     winning_result: dict[str, Any]
     completed_level_models: dict[str, str]
-    phase: str = "review"
 
 
 @dataclass(frozen=True)
@@ -988,9 +987,11 @@ class ToolAgent:
         self._step_env_callback: Callable[[dict[str, Any]], dict[str, Any]] | None = None
         self._current_valid_actions: list[str] = []
         self._last_step_summary: dict[str, Any] | None = None
+        self._last_step_summary_reported = False
         self._last_action_result: dict[str, Any] | None = None
         self._summarized_knowledge = _empty_world_model()
         self._pending_level_transition: _PendingLevelTransition | None = None
+        self._level_review_context_pending = False
 
     def _headers(self) -> dict[str, str]:
         api_key = (
@@ -1016,9 +1017,11 @@ class ToolAgent:
             self._session_total_tokens = 0
             self._session_generated_tokens = 0
             self._last_step_summary = None
+            self._last_step_summary_reported = False
             self._last_action_result = None
             self._summarized_knowledge = _empty_world_model()
             self._pending_level_transition = None
+            self._level_review_context_pending = False
 
     @property
     def total_tokens(self) -> int:
@@ -1144,6 +1147,8 @@ class ToolAgent:
         if not note:
             return
         for key, value in note.items():
+            if key == "cross_level_notes" and self._level_review_context_pending:
+                continue
             if value:
                 self._summarized_knowledge[key] = value
 
@@ -1201,7 +1206,11 @@ class ToolAgent:
         history_entries: list[HistoryEntry],
         winning_result: dict[str, Any],
     ) -> None:
-        if not winning_result.get("level_completed") or winning_result.get("run_complete"):
+        if winning_result.get("run_complete"):
+            self._pending_level_transition = None
+            self._level_review_context_pending = False
+            return
+        if not winning_result.get("level_completed"):
             return
         completed_frame = history_entries[-2].frame if len(history_entries) >= 2 else fallback_frame
         if completed_frame is None:
@@ -1240,55 +1249,6 @@ class ToolAgent:
                 "Revise any belief contradicted by the winning evidence. Cross-level notes replace the old notes and must be compact: retain only transferable mechanics, invariants, goal patterns, and useful uncertainties; omit coordinates and level-specific layout.",
             ]
         )
-
-    def _next_level_initialization_prompt(
-        self,
-        *,
-        current_frame: Frame | None,
-        valid_actions: list[str] | None,
-    ) -> str:
-        new_level = current_frame.level if current_frame is not None else "unknown"
-        cross_level_notes = self._summarized_knowledge.get("cross_level_notes", "")
-        return "\n".join(
-            [
-                (
-                    f"The completed-level review succeeded. This is the first exposure to level {new_level}; "
-                    "use the reviewed understanding as the starting point for interpreting it."
-                ),
-                "The attached image and `current_frame` are the actual new-level state.",
-                f"Valid actions right now: {_format_valid_action_line(valid_actions)}.",
-                f"Transferable cross-level notes: {cross_level_notes or '(none)'}",
-                (
-                    "Map the reviewed mechanics, object roles, and goal pattern onto the visible scene. "
-                    "Treat them as grounded working hypotheses: identify what carries over, what differs, "
-                    "and what needs to be re-verified in this level."
-                ),
-                (
-                    "Use Python inspection calls as needed, then take the best available environment action "
-                    "when ready. `action(...)` is available immediately."
-                ),
-                "You may emit fresh entries for any of these labels for the new level:",
-                "World model:",
-                "Goal model:",
-                "Action model:",
-                "Open questions:",
-                "Plan:",
-                TOOL_CALL_FORMAT_GUIDANCE,
-            ]
-        )
-
-    def _record_next_level_models(self, content: str) -> None:
-        note = _extract_scientist_note(content)
-        for key in (
-            "world_model",
-            "goal_model",
-            "action_model",
-            "open_questions",
-            "current_plan",
-        ):
-            value = note.get(key, "")
-            if value:
-                self._summarized_knowledge[key] = value
 
     def _complete_level_review(
         self,
@@ -1357,7 +1317,8 @@ class ToolAgent:
                 retained = _empty_world_model()
                 retained["cross_level_notes"] = review["cross_level_notes"]
                 self._summarized_knowledge = retained
-                pending.phase = "initialization"
+                self._pending_level_transition = None
+                self._level_review_context_pending = True
                 self._history_messages = []
                 return True, captured_reasoning
             if attempt == 0:
@@ -1395,6 +1356,8 @@ class ToolAgent:
         current_frame: Frame | None = None,
         history_entries: list[HistoryEntry] | None = None,
         previous_step_summary: dict[str, Any] | None = None,
+        previous_step_summary_reported: bool = False,
+        level_review_context: bool = False,
     ) -> str:
         history_entries = history_entries or []
         current_step = max(current_frame.step if current_frame is not None else 0, max(0, action_num)) + 1
@@ -1412,39 +1375,54 @@ class ToolAgent:
             default=current_level,
         )
         lines: list[str] = []
-        if previous_step_summary:
-            count = previous_step_summary.get("executed_count")
-            try:
-                normalized_count = int(count) if count is not None else None
-            except (TypeError, ValueError):
-                normalized_count = None
-            action_label = "action" if normalized_count == 1 else "actions"
-            lines.append(f"The code executed {normalized_count or 0} {action_label} in the previous sequence.")
-            executed_actions = previous_step_summary.get("executed_actions")
-            rendered_actions: list[str] = []
-            if isinstance(executed_actions, list):
-                rendered_actions = [str(name).strip() for name in executed_actions if str(name).strip()]
-            if rendered_actions:
-                action_prefix = "Executed actions (first 10):" if len(rendered_actions) > 10 else "Executed actions:"
-                lines.append(f"{action_prefix} {', '.join(rendered_actions[:10])}.")
+
+        if not level_review_context:
+            if previous_step_summary and previous_step_summary_reported:
+                # The sequence below was already reported on an earlier prompt. Repeating
+                # it makes actions from a finished level look like they just happened.
+                lines.append("No new actions have been executed since the previous turn.")
+            elif previous_step_summary:
+                count = previous_step_summary.get("executed_count")
+                try:
+                    normalized_count = int(count) if count is not None else None
+                except (TypeError, ValueError):
+                    normalized_count = None
+                action_label = "action" if normalized_count == 1 else "actions"
+                lines.append(f"The code executed {normalized_count or 0} {action_label} in the previous sequence.")
+                executed_actions = previous_step_summary.get("executed_actions")
+                rendered_actions: list[str] = []
+                if isinstance(executed_actions, list):
+                    rendered_actions = [str(name).strip() for name in executed_actions if str(name).strip()]
+                if rendered_actions:
+                    action_prefix = "Executed actions (first 10):" if len(rendered_actions) > 10 else "Executed actions:"
+                    lines.append(f"{action_prefix} {', '.join(rendered_actions[:10])}.")
+                else:
+                    lines.append("Executed actions: none.")
+
+                if previous_step_summary.get("run_complete"):
+                    lines.append("You have completed the run!")
+                elif not previous_step_summary.get("level_transition"):
+                    lines.append("You are still on the same level.")
+                if previous_step_summary.get("game_over"):
+                    lines.append("The game is over.")
+            elif (current_frame is not None and current_frame.step > 0) or action_num > 0:
+                lines.append("No previous action sequence was captured.")
             else:
-                lines.append("Executed actions: none.")
-            if previous_step_summary.get("run_complete"):
-                lines.append("You have completed the run!")
-            elif previous_step_summary.get("level_transition"):
-                lines.append("You have progressed to a new level!")
-            else:
-                lines.append("You are still on the same level.")
-            if previous_step_summary.get("game_over"):
-                lines.append("The game is over.")
-        elif (current_frame is not None and current_frame.step > 0) or action_num > 0:
-            lines.append("No previous action sequence was captured.")
-        else:
-            lines.append("No previous sequence has been executed yet.")
+                lines.append("No previous sequence has been executed yet.")
         state_line = f"Current state: step {current_step}, level {current_level}"
         if observed_max_level > current_level:
             state_line += f" out of observed max level {observed_max_level} so far"
         state_line += "."
+        lines.append(state_line)
+        if level_review_context:
+            lines.extend(
+                [
+                    "Use the completed-level review as context for interpreting the current level.",
+                    "Map the reviewed mechanics, object roles, and goal pattern onto the visible scene. "
+                    "Treat them as grounded working hypotheses: identify what carries over, what differs, "
+                    "and what needs to be re-verified in this level.",
+                ]
+            )
         lines.extend(
             [
                 state_line,
@@ -1464,7 +1442,25 @@ class ToolAgent:
         )
         lines.extend(self._summarized_knowledge_lines())
         lines.append("end of world model. ")
-        if action_num == 0:
+        if level_review_context:
+            if not any(
+                self._summarized_knowledge.get(key)
+                for key in (
+                    "world_model",
+                    "goal_model",
+                    "action_model",
+                    "recent_findings",
+                    "open_questions",
+                    "current_plan",
+                )
+            ):
+                # Only true until the model refills them; the carry block above is
+                # the authority, so do not contradict it on later turns.
+                lines.append(
+                    "The per-level fields were reset by the completed-level review, so only the "
+                    "cross-level notes carry over."
+                )
+        elif action_num == 0:
             lines.append(
                 "Ground yourself in `current_frame` before acting, but start with a compact structural summary rather than restating the full frame."
             )
@@ -1699,7 +1695,7 @@ class ToolAgent:
         ) -> dict[str, Any]:
             refreshed_frame, refreshed_history = load_runtime_state(state_path)
             pending_transition = self._pending_level_transition
-            if pending_transition is not None and pending_transition.phase == "review":
+            if pending_transition is not None:
                 refreshed_frame = pending_transition.completed_frame
                 refreshed_history = pending_transition.completed_history
                 next_valid_actions = []
@@ -1822,6 +1818,10 @@ class ToolAgent:
         step_executed = any(bool(item.get("executed")) for item in action_results)
         if step_executed:
             self._last_step_summary = self._summarize_step_sequence(action_results)
+            self._last_step_summary_reported = False
+            if self._last_step_summary.get("run_complete") or self._last_step_summary.get("game_over"):
+                self._pending_level_transition = None
+                self._level_review_context_pending = False
             self._update_summarized_knowledge_from_step_summary()
         return _ToolDispatchResult(
             self._render_tool_payload(payload, truncate_fields=("stdout", "error", "result")),
@@ -1984,7 +1984,7 @@ class ToolAgent:
 
         captured_reasoning = ""
         pending_transition = self._pending_level_transition
-        if pending_transition is not None and pending_transition.phase == "review":
+        if pending_transition is not None:
             review_system_prompt = (
                 "You are reviewing a just-completed grid-puzzle level in isolation. "
                 "No tools or next-level state are available."
@@ -2020,27 +2020,25 @@ class ToolAgent:
                     reasoning=captured_reasoning,
                 )
 
-        pending_transition = self._pending_level_transition
-        next_level_initialization_turn = bool(
-            pending_transition is not None and pending_transition.phase == "initialization"
+        # The next-level mapping guidance is folded into the ordinary turn prompt
+        # instead of being its own turn. One context spans the first exposure and
+        # the authoritative-state prompt after the first new-level action sequence.
+        level_review_context_turn = self._level_review_context_pending
+        rendered_step_summary = self._last_step_summary
+        close_level_review_context = bool(
+            level_review_context_turn
+            and rendered_step_summary
+            and not rendered_step_summary.get("level_transition")
         )
-        if next_level_initialization_turn:
-            user_prompt = self._next_level_initialization_prompt(
-                current_frame=current_frame,
-                valid_actions=valid_actions,
-            )
-            # The first-exposure prompt is one-shot. Models emitted during this
-            # analyzer turn are captured opportunistically below, but missing
-            # fields must never keep gameplay in an initialization state.
-            self._pending_level_transition = None
-        else:
-            user_prompt = self._build_user_prompt(
-                action_num,
-                valid_actions=valid_actions,
-                current_frame=current_frame,
-                history_entries=history_entries,
-                previous_step_summary=self._last_step_summary,
-            )
+        user_prompt = self._build_user_prompt(
+            action_num,
+            valid_actions=valid_actions,
+            current_frame=current_frame,
+            history_entries=history_entries,
+            previous_step_summary=rendered_step_summary,
+            previous_step_summary_reported=self._last_step_summary_reported,
+            level_review_context=level_review_context_turn,
+        )
         append_transcript("SYSTEM PROMPT", self._system_prompt)
         append_transcript("USER PROMPT", user_prompt)
 
@@ -2185,12 +2183,8 @@ class ToolAgent:
 
                 if not tool_calls:
                     if content:
-                        if next_level_initialization_turn:
-                            self._record_next_level_models(content)
-                        else:
-                            self._update_summarized_knowledge_from_assistant(content)
-                        label = "NEXT LEVEL INITIALIZATION" if next_level_initialization_turn else "ASSISTANT"
-                        append_transcript(label, content)
+                        self._update_summarized_knowledge_from_assistant(content)
+                        append_transcript("ASSISTANT", content)
                         assistant_message["content"] = content
                     elif reasoning:
                         assistant_message["content"] = None
@@ -2223,12 +2217,8 @@ class ToolAgent:
                     continue
 
                 if content:
-                    if next_level_initialization_turn:
-                        self._record_next_level_models(content)
-                    else:
-                        self._update_summarized_knowledge_from_assistant(content)
-                    label = "NEXT LEVEL INITIALIZATION" if next_level_initialization_turn else "ASSISTANT"
-                    append_transcript(label, content)
+                    self._update_summarized_knowledge_from_assistant(content)
+                    append_transcript("ASSISTANT", content)
                     assistant_message["content"] = content
                 assistant_message["tool_calls"] = tool_calls
                 messages.append(assistant_message)
@@ -2315,6 +2305,12 @@ class ToolAgent:
         finally:
             if preserve_history:
                 self._history_messages = self._persistent_history_messages(messages, tools=self._tools(state_path))
+                # Only retire the report the model actually saw; a step executed
+                # during this turn installs a fresh summary that still owes one.
+                if rendered_step_summary is not None and self._last_step_summary is rendered_step_summary:
+                    self._last_step_summary_reported = True
+                if close_level_review_context:
+                    self._level_review_context_pending = False
             else:
                 self._history_messages = previous_history_messages
             self._step_env_callback = None
