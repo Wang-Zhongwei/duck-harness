@@ -155,10 +155,13 @@ def load_run_summary(*, runs_dir: str | Path = "runs", run_dir: str | Path | Non
     )
     cached = _RUN_PAYLOAD_CACHE.get(cache_key)
     if cached is None:
+        games = _load_game_summaries(resolved_run_dir)
         cached = {
             "source": "viewer_data",
             "arc_palette": _arc_palette(),
-            "games": _load_game_summaries(resolved_run_dir),
+            "games": games,
+            "evaluation": _load_evaluation(resolved_run_dir),
+            "artifact_snapshot": _build_artifact_snapshot(resolved_run_dir, games),
         }
         for existing_key in [key for key in _RUN_PAYLOAD_CACHE if key[:2] == cache_key[:2] and key != cache_key]:
             _RUN_PAYLOAD_CACHE.pop(existing_key, None)
@@ -171,6 +174,8 @@ def load_run_summary(*, runs_dir: str | Path = "runs", run_dir: str | Path | Non
         "source": cached["source"],
         "arc_palette": cached["arc_palette"],
         "games": cached["games"],
+        "evaluation": cached["evaluation"],
+        "artifact_snapshot": cached["artifact_snapshot"],
     }
 
 
@@ -390,6 +395,7 @@ def _run_dir_fingerprint(run_dir: Path) -> tuple[Any, ...]:
     relevant_paths.extend(sorted(run_dir.glob("*requests.jsonl")))
     relevant_paths.extend(sorted(run_dir.glob("seeds/*/*requests.jsonl")))
     relevant_paths.extend(sorted(run_dir.glob("seeds/*/run_config.json")))
+    relevant_paths.extend(path for path in (run_dir / "evaluation.json",) if path.exists())
     total_size = 0
     max_mtime_ns = 0
     for path in relevant_paths:
@@ -405,6 +411,95 @@ def _run_dir_fingerprint(run_dir: Path) -> tuple[Any, ...]:
         max_mtime_ns,
         bool(_viewer_data_paths(run_dir)),
     )
+
+
+def _load_evaluation(run_dir: Path) -> dict[str, Any] | None:
+    """Load the run's sole canonical evaluation artifact."""
+    payload = _load_optional_json(run_dir / "evaluation.json")
+    return {**payload, "source_file": "evaluation.json"} if payload else None
+
+
+def _build_artifact_snapshot(run_dir: Path, games: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build trace-derived snapshot data without presenting it as evaluation or score."""
+    score_games: dict[str, dict[str, Any]] = {}
+    action_total = 0
+    event_total = 0
+    runtime_symbol_total = 0
+    snapshot_scores: list[float] = []
+
+    for index, game in enumerate(games):
+        game_id = str(game.get("game_id") or f"game-{index + 1}")
+        split_label = game.get("pass_label")
+        split_kind = "pass"
+        if split_label in (None, ""):
+            split_label = game.get("seed_label")
+            split_kind = "seed"
+        trial_label = (
+            f"{run_dir.name}/{split_kind}-{split_label}"
+            if split_label not in (None, "")
+            else f"{run_dir.name}/view-{index}"
+        )
+        last_event = game.get("lastEvent") if isinstance(game.get("lastEvent"), dict) else {}
+        entry = score_games.setdefault(
+            game_id,
+            {
+                "trial_scores": {},
+                "actions": {},
+                "turns": {},
+                "levels_completed": {},
+                "events": {},
+                "runtime_symbol_uses": {},
+                "trial_count": 0,
+            },
+        )
+
+        score = last_event.get("score")
+        if isinstance(score, (int, float)):
+            entry["trial_scores"][trial_label] = score
+            snapshot_scores.append(float(score))
+        action_count = _coerce_optional_int(last_event.get("action_num"))
+        if action_count is not None:
+            entry["actions"][trial_label] = action_count
+            action_total += action_count
+        turn_count = _coerce_optional_int(last_event.get("analysis_step"))
+        if turn_count is not None:
+            entry["turns"][trial_label] = turn_count
+        level = _coerce_optional_int(last_event.get("level"))
+        if level is not None:
+            entry["levels_completed"][trial_label] = level
+        event_count = int(game.get("eventCount") or 0)
+        runtime_uses = int(game.get("runtimeSymbolUseCount") or 0)
+        entry["events"][trial_label] = event_count
+        entry["runtime_symbol_uses"][trial_label] = runtime_uses
+        entry["trial_count"] += 1
+        event_total += event_count
+        runtime_symbol_total += runtime_uses
+
+    for entry in score_games.values():
+        scores = list(entry["trial_scores"].values())
+        entry["score"] = sum(scores) / len(scores) if scores else None
+
+    unique_games = len(score_games)
+    return {
+        "version": 0,
+        "provisional": True,
+        "source_file": "viewer artifacts",
+        "semantics": "trace_snapshot",
+        "score": sum(snapshot_scores) / len(snapshot_scores) if snapshot_scores else None,
+        "usage": {
+            "totals": {
+                "actions": action_total,
+                "events": event_total,
+                "runtime_symbol_uses": runtime_symbol_total,
+            },
+        },
+        "games": score_games,
+        "metadata": {
+            "game_count": unique_games,
+            "trial_count": len(games),
+            "dataset_description": "Live artifact snapshot; evaluation has not run",
+        },
+    }
 
 
 def _arc_palette() -> list[str]:
@@ -906,7 +1001,7 @@ def _compact_last_event_summary(event: dict[str, Any] | None) -> dict[str, Any] 
     status = str(event.get("status") or "").strip()
     if status:
         summary["status"] = status
-    for key in ("action_num", "score", "reward"):
+    for key in ("action_num", "analysis_step", "score", "reward", "level", "state"):
         if event.get(key) is not None:
             summary[key] = event.get(key)
     transcript = str(event.get("transcript") or "")

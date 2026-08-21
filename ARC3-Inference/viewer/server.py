@@ -11,7 +11,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from inference.tools.score_registry import load_score_registry
 from inference.utils.run_artifacts import is_selectable_run_dir_name
+from viewer.data import list_run_dirs
 from viewer.data import load_game_payload, load_game_shell_payload, load_game_step_payload, load_run_summary
 
 
@@ -35,6 +37,23 @@ def _comparison_html_path() -> Path:
 
 def _comparison_json_path(runs_dir: Path) -> Path:
     return runs_dir / "inference_score_comparison.json"
+
+
+def _load_comparison_payload(runs_dir: Path) -> dict:
+    """Limit comparisons to evaluated runs shown by the homepage."""
+    payload = load_score_registry(_comparison_json_path(runs_dir))
+    runs = payload.get("runs") if isinstance(payload.get("runs"), dict) else {}
+    eligible = {path.name for path in list_run_dirs(runs_dir) if (path / "evaluation.json").is_file()}
+    retained = {
+        str(run_id): entry
+        for run_id, entry in runs.items()
+        if str(run_id) in eligible
+    }
+    order = [str(run_id) for run_id in payload.get("run_order", [])]
+    payload["runs"] = retained
+    payload["run_order"] = [run_id for run_id in order if run_id in retained]
+    payload["run_order"].extend(sorted(set(retained) - set(payload["run_order"])))
+    return payload
 
 
 def _load_index_html() -> str:
@@ -102,13 +121,9 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         log.info("%s - %s", self.address_string(), fmt % args)
 
     def _handle_comparison_api(self) -> None:
-        path = _comparison_json_path(self.runs_dir)
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            self._send_json({"error": f"Comparison data not found: {path}"}, status=HTTPStatus.NOT_FOUND)
-            return
-        except json.JSONDecodeError as exc:
+            payload = _load_comparison_payload(self.runs_dir)
+        except (json.JSONDecodeError, ValueError) as exc:
             self._send_json({"error": f"Invalid comparison JSON: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
         self._send_json(payload)

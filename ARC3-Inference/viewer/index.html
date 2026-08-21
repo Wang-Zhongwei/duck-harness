@@ -49,10 +49,10 @@
     }
 
     .topbar {
-      display: flex;
+      display: grid;
+      grid-template-columns: minmax(190px, 1fr) minmax(0, auto);
       align-items: center;
-      justify-content: space-between;
-      gap: 16px;
+      gap: 18px;
       padding: 14px 18px;
       border: 1px solid rgba(197, 93, 31, 0.16);
       border-radius: var(--radius);
@@ -60,6 +60,8 @@
       backdrop-filter: blur(10px);
       box-shadow: var(--shadow);
     }
+
+    .title-wrap { min-width: 0; }
 
     .title-wrap h1 {
       margin: 0 0 4px;
@@ -69,15 +71,27 @@
     }
 
     .subtitle {
+      overflow: hidden;
       color: var(--muted);
       font-size: 0.92rem;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .controls {
-      display: flex;
+      min-width: 0;
+      display: grid;
+      grid-template-columns: auto minmax(190px, 30vw) minmax(180px, 25vw) auto;
       align-items: center;
+      justify-content: end;
       gap: 10px;
-      flex-wrap: wrap;
+    }
+    .controls.results-mode { grid-template-columns: auto minmax(190px, 1fr) auto; }
+
+    #run-select, #game-select {
+      width: 100%;
+      min-width: 0;
+      text-overflow: ellipsis;
     }
 
     select,
@@ -97,7 +111,57 @@
       border-color: var(--ink);
     }
 
-    .button-link { display: inline-flex; align-items: center; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent-soft); color: #74340f; padding: 9px 14px; font: inherit; font-weight: 700; text-decoration: none; white-space: nowrap; }
+    .button-link { display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent-soft); color: #74340f; padding: 9px 14px; font: inherit; font-weight: 700; text-decoration: none; white-space: nowrap; }
+
+    .view-switch { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 999px; background: rgba(24, 36, 45, 0.04); }
+    button.view-tab { border: 0; padding: 6px 12px; background: transparent; color: var(--muted); font-size: 0.84rem; font-weight: 700; }
+    button.view-tab.active { background: var(--ink); color: #fff; box-shadow: 0 4px 12px rgba(24, 36, 45, 0.16); }
+    [hidden] { display: none !important; }
+
+    .results-view { min-height: 0; overflow: auto; display: grid; align-content: start; gap: 12px; padding-bottom: 2px; }
+    .score-kpis { display: grid; grid-template-columns: repeat(6, minmax(130px, 1fr)); gap: 10px; }
+    .score-kpi { padding: 14px 16px; border-radius: 15px; border: 1px solid rgba(24, 36, 45, 0.08); background: rgba(255, 250, 241, 0.96); box-shadow: var(--shadow); }
+    .score-kpi-label { color: var(--muted); font-size: 0.68rem; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase; }
+    .score-kpi-value { margin-top: 6px; font-size: 1.35rem; font-weight: 750; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+    .score-kpi-note { margin-top: 3px; color: var(--muted); font-size: 0.72rem; }
+    .results-grid { display: grid; grid-template-columns: minmax(640px, 2fr) minmax(280px, 0.8fr); gap: 12px; min-height: 0; }
+    .results-panel { border-radius: var(--radius); border: 1px solid rgba(24, 36, 45, 0.08); background: rgba(255, 250, 241, 0.96); box-shadow: var(--shadow); overflow: hidden; }
+    .results-panel-head { min-height: 58px; padding: 12px 16px; border-bottom: 1px solid rgba(24, 36, 45, 0.08); display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+    .results-panel-head h2 { margin: 0; font-size: 0.95rem; }
+    .results-panel-head p { margin: 3px 0 0; color: var(--muted); font-size: 0.75rem; }
+    .results-tools { display: flex; gap: 8px; align-items: center; }
+    .results-tools select { padding: 7px 11px; font-size: 0.78rem; }
+    .matrix-wrap { overflow: auto; max-height: min(57vh, 650px); }
+    .score-matrix { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.76rem; }
+    .score-matrix th, .score-matrix td { min-width: 68px; height: 37px; padding: 7px 9px; border-right: 1px solid rgba(24, 36, 45, 0.06); border-bottom: 1px solid rgba(24, 36, 45, 0.06); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .score-matrix th { position: sticky; top: 0; z-index: 2; background: #f8f2e8; color: var(--muted); font-size: 0.65rem; letter-spacing: 0.06em; text-transform: uppercase; }
+    .score-matrix .game-col { position: sticky; left: 0; z-index: 1; min-width: 145px; max-width: 145px; text-align: left; background: #fffaf1; color: var(--ink); font-family: "IBM Plex Mono", "SFMono-Regular", monospace; font-weight: 700; }
+    .score-matrix th.game-col { z-index: 3; background: #f8f2e8; }
+    .matrix-cell { cursor: pointer; background: color-mix(in srgb, var(--accent) calc(var(--heat, 0) * 52%), #fff 48%); transition: box-shadow 100ms ease, transform 100ms ease; }
+    .matrix-cell:hover { box-shadow: inset 0 0 0 2px var(--accent); transform: scale(1.02); }
+    .matrix-cell.missing { color: #a6afb3; background: rgba(24, 36, 45, 0.025); cursor: default; }
+    .mean-cell { background: rgba(24, 36, 45, 0.055); font-weight: 750; }
+    .game-inspector { padding: 16px; display: grid; align-content: start; gap: 14px; }
+    .inspector-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .inspector-title h2 { margin: 0; font: 750 1.05rem "IBM Plex Mono", monospace; }
+    .trace-link { border: 0; padding: 0; background: transparent; color: var(--accent); font-size: 0.78rem; font-weight: 750; }
+    .inspector-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .inspector-stat { padding: 10px; border-radius: 11px; background: rgba(24, 36, 45, 0.045); }
+    .inspector-stat span { display: block; color: var(--muted); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.07em; }
+    .inspector-stat strong { display: block; margin-top: 4px; font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+    .trial-list { display: grid; gap: 6px; max-height: 330px; overflow: auto; padding-right: 3px; }
+    .trial-row { display: grid; grid-template-columns: 58px minmax(0, 1fr) 70px; align-items: center; gap: 8px; font-size: 0.73rem; }
+    .trial-track { height: 7px; overflow: hidden; border-radius: 8px; background: rgba(24, 36, 45, 0.08); }
+    .trial-bar { height: 100%; border-radius: inherit; background: var(--accent); }
+    .trial-value { text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; }
+    .pass-panel, .evaluation-panel { grid-column: 1 / -1; }
+    .evaluation-body { padding: 14px 16px; }
+    .evaluation-body .inspector-stats { grid-template-columns: repeat(6, minmax(110px, 1fr)); }
+    .pass-table-wrap { overflow: auto; max-height: 280px; }
+    .pass-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+    .pass-table th, .pass-table td { padding: 9px 14px; border-bottom: 1px solid rgba(24,36,45,.07); text-align: right; white-space: nowrap; }
+    .pass-table th { color: var(--muted); font-size: .64rem; text-transform: uppercase; letter-spacing: .07em; }
+    .pass-table th:first-child, .pass-table td:first-child { text-align: left; font-weight: 750; }
 
     .content {
       display: grid;
@@ -586,6 +650,11 @@
     }
 
     @media (max-width: 1100px) {
+      .score-kpis { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
+      .results-grid { grid-template-columns: 1fr; }
+      .pass-panel { grid-column: auto; }
+      .evaluation-body .inspector-stats { grid-template-columns: repeat(3, minmax(110px, 1fr)); }
+
       body {
         overflow: auto;
       }
@@ -611,6 +680,22 @@
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
     }
+
+    @media (max-width: 900px) {
+      .topbar { grid-template-columns: 1fr; align-items: start; }
+      .controls { width: 100%; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) auto; }
+      .controls.results-mode { grid-template-columns: auto minmax(0, 1fr) auto; }
+    }
+
+    @media (max-width: 650px) {
+      .score-kpis { grid-template-columns: repeat(2, minmax(110px, 1fr)); }
+      .controls { grid-template-columns: 1fr auto; }
+      .controls.results-mode { grid-template-columns: 1fr auto; }
+      .controls.results-mode .button-link { grid-column: 2; grid-row: 1; }
+      #run-select, #game-select { grid-column: 1 / -1; }
+      .evaluation-body .inspector-stats { grid-template-columns: repeat(2, minmax(100px, 1fr)); }
+      .results-panel-head { align-items: flex-start; flex-direction: column; }
+    }
   </style>
 </head>
 <body>
@@ -621,14 +706,38 @@
         <div class="subtitle" id="run-subtitle">Loading latest run...</div>
       </div>
       <div class="controls">
+        <div class="view-switch" role="tablist" aria-label="Viewer mode">
+          <button class="view-tab active" id="results-tab" type="button" role="tab" aria-selected="true">Results</button>
+          <button class="view-tab" id="trace-tab" type="button" role="tab" aria-selected="false">Trace</button>
+        </div>
         <select id="run-select" aria-label="Run selector"></select>
         <select id="game-select" aria-label="Game selector"></select>
         <a class="button-link" href="/comparison">Compare runs</a>
-        <button id="reload-button" type="button">Reload</button>
       </div>
     </div>
 
-    <div class="content">
+    <section class="results-view" id="results-view">
+      <div class="score-kpis" id="score-kpis"></div>
+      <div class="results-grid">
+        <section class="results-panel">
+          <div class="results-panel-head">
+            <div><h2>Game × pass matrix</h2><p>Click a value to open its trace</p></div>
+            <div class="results-tools">
+              <select id="matrix-sort" aria-label="Sort games"><option value="score">Highest first</option><option value="variance">Most variable</option><option value="game">Game ID</option></select>
+              <select id="matrix-metric" aria-label="Matrix metric"></select>
+            </div>
+          </div>
+          <div class="matrix-wrap" id="score-matrix"></div>
+        </section>
+        <aside class="results-panel game-inspector" id="game-inspector"></aside>
+        <section class="results-panel pass-panel">
+          <div class="results-panel-head"><div><h2 id="breakdown-title">Evaluation by pass</h2><p id="breakdown-subtitle">Metrics from evaluation.json</p></div></div>
+          <div class="pass-table-wrap" id="pass-breakdown"></div>
+        </section>
+      </div>
+    </section>
+
+    <div class="content" id="trace-view" hidden>
       <section class="panel events-panel">
         <div class="panel-head">
           <h2>Agent Context</h2>
@@ -679,6 +788,9 @@
     let currentScrollStepIndex = null;
     let expandedStepIndex = null;
     let hoveredStepIndex = null;
+    let currentView = "results";
+    let matrixMetric = "score";
+    let selectedResultGame = null;
 
     const runSubtitleEl = document.getElementById("run-subtitle");
     const runSelectEl = document.getElementById("run-select");
@@ -691,10 +803,47 @@
     const canvasEl = document.getElementById("board-canvas");
     const asciiBoardEl = document.getElementById("ascii-board");
     const runtimeUsageEl = document.getElementById("runtime-usage");
+    const resultsViewEl = document.getElementById("results-view");
+    const traceViewEl = document.getElementById("trace-view");
+    const resultsTabEl = document.getElementById("results-tab");
+    const traceTabEl = document.getElementById("trace-tab");
+    const scoreKpisEl = document.getElementById("score-kpis");
+    const scoreMatrixEl = document.getElementById("score-matrix");
+    const matrixMetricEl = document.getElementById("matrix-metric");
+    const matrixSortEl = document.getElementById("matrix-sort");
+    const gameInspectorEl = document.getElementById("game-inspector");
+    const passBreakdownEl = document.getElementById("pass-breakdown");
+    const breakdownTitleEl = document.getElementById("breakdown-title");
+    const breakdownSubtitleEl = document.getElementById("breakdown-subtitle");
 
-    document.getElementById("reload-button").addEventListener("click", () => {
-      loadPayload(currentRunName, { preserveSelection: true, silent: false });
+    resultsTabEl.addEventListener("click", () => switchView("results"));
+    traceTabEl.addEventListener("click", () => switchView("trace"));
+    matrixMetricEl.addEventListener("change", () => {
+      matrixMetric = matrixMetricEl.value;
+      renderResults();
     });
+    matrixSortEl.addEventListener("change", renderResults);
+    scoreMatrixEl.addEventListener("click", (event) => {
+      const target = event.target.closest("[data-result-game]");
+      if (!target) return;
+      selectedResultGame = target.dataset.resultGame;
+      if (target.dataset.resultTrial) {
+        openTrace(selectedResultGame, target.dataset.resultTrial);
+      } else {
+        renderResults();
+      }
+    });
+    gameInspectorEl.addEventListener("click", (event) => {
+      const target = event.target.closest("[data-open-game]");
+      if (target) openTrace(target.dataset.openGame, target.dataset.openTrial || "");
+    });
+    gameInspectorEl.addEventListener("change", (event) => {
+      const target = event.target.closest("[data-result-game-select]");
+      if (!target) return;
+      selectedResultGame = target.value;
+      renderResults();
+    });
+
     runSelectEl.addEventListener("change", () => {
       currentRunName = runSelectEl.value || null;
       currentGameIndex = 0;
@@ -702,6 +851,7 @@
     });
     gameSelectEl.addEventListener("change", () => {
       currentGameIndex = Number(gameSelectEl.value || 0);
+      switchView("trace");
       loadGameDetails(currentGameIndex, {
         preserveSelection: false,
         previousActiveStepIndex: activeStepIndex,
@@ -1011,6 +1161,283 @@
       }
     }
 
+    const resultMetricDefinitions = {
+      score: { label: "Score", map: "trial_scores", digits: 2 },
+      total_tokens: { label: "Total tokens", map: "total_tokens", digits: 0 },
+      actions: { label: "Actions", map: "actions", digits: 0 },
+      turns: { label: "Turns", map: "turns", digits: 0 },
+      levels_completed: { label: "Levels completed", map: "levels_completed", digits: 1 },
+      tokens_per_action: { label: "Tokens / action", map: "tokens_per_action", digits: 0 },
+      tokens_per_turn: { label: "Tokens / turn", map: "tokens_per_turn", digits: 0 },
+      events: { label: "Events", map: "events", digits: 0 },
+      runtime_symbol_uses: { label: "Runtime calls", map: "runtime_symbol_uses", digits: 0 },
+    };
+
+    function switchView(view) {
+      currentView = view === "trace" ? "trace" : "results";
+      const showingResults = currentView === "results";
+      gameSelectEl.closest(".controls").classList.toggle("results-mode", showingResults);
+      gameSelectEl.hidden = showingResults;
+      resultsViewEl.hidden = !showingResults;
+      traceViewEl.hidden = showingResults;
+      resultsTabEl.classList.toggle("active", showingResults);
+      traceTabEl.classList.toggle("active", !showingResults);
+      resultsTabEl.setAttribute("aria-selected", String(showingResults));
+      traceTabEl.setAttribute("aria-selected", String(!showingResults));
+      if (!showingResults) {
+        const step = currentSteps[getDisplayedStepIndex()];
+        if (step) window.requestAnimationFrame(() => renderBoard(step.boardEvent || step.event));
+      }
+    }
+
+    function resultDataset() {
+      return payload?.evaluation || payload?.artifact_snapshot || null;
+    }
+
+    function scoreGames() {
+      const games = resultDataset()?.games;
+      if (Array.isArray(games)) {
+        return Object.fromEntries(games.filter((game) => game?.game_id).map((game) => [game.game_id, game]));
+      }
+      return games && typeof games === "object" ? games : {};
+    }
+
+    function metricMap(game, metric) {
+      const definition = resultMetricDefinitions[metric] || resultMetricDefinitions.score;
+      let values = game?.[definition.map];
+      return values && !Array.isArray(values) && typeof values === "object" ? values : {};
+    }
+
+    function trialLabels(games) {
+      const labels = new Set();
+      const metadata = resultDataset()?.metadata || {};
+      const metadataLabels = metadata.trial_labels || [];
+      metadataLabels.forEach((label) => labels.add(String(label)));
+      Object.values(games).forEach((game) => {
+        Object.values(resultMetricDefinitions).forEach((definition) => {
+          const values = game?.[definition.map];
+          if (values && typeof values === "object" && !Array.isArray(values)) {
+            Object.keys(values).forEach((label) => labels.add(label));
+          }
+        });
+      });
+      return [...labels].sort((a, b) => {
+        const aNumber = Number(String(a).match(/(?:pass|seed)-(\d+)$/)?.[1]);
+        const bNumber = Number(String(b).match(/(?:pass|seed)-(\d+)$/)?.[1]);
+        if (Number.isFinite(aNumber) && Number.isFinite(bNumber)) return aNumber - bNumber;
+        return String(a).localeCompare(String(b));
+      });
+    }
+
+    function shortTrialLabel(label) {
+      return String(label).split("/").pop().replace(/^pass-/, "p").replace(/^seed-/, "s");
+    }
+
+    function finiteValues(values) {
+      return values
+        .filter((value) => value !== null && value !== undefined && value !== "")
+        .map(Number)
+        .filter(Number.isFinite);
+    }
+
+    function mean(values) {
+      const numbers = finiteValues(values);
+      return numbers.length ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : null;
+    }
+
+    function variance(values) {
+      const numbers = finiteValues(values);
+      if (!numbers.length) return null;
+      const average = mean(numbers);
+      return numbers.reduce((sum, value) => sum + ((value - average) ** 2), 0) / numbers.length;
+    }
+
+    function dashboardNumber(value, digits = 0) {
+      if (value === null || value === undefined || value === "") return "—";
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "—";
+      return number.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    }
+
+    function compactNumber(value) {
+      if (value === null || value === undefined || value === "") return "—";
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "—";
+      return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(number);
+    }
+
+    function metricNumber(value, metric = matrixMetric) {
+      return dashboardNumber(value, resultMetricDefinitions[metric]?.digits ?? 1);
+    }
+
+    function renderKpi(label, value, note = "") {
+      return `<div class="score-kpi"><div class="score-kpi-label">${escapeHtml(label)}</div><div class="score-kpi-value">${escapeHtml(value)}</div><div class="score-kpi-note">${escapeHtml(note)}</div></div>`;
+    }
+
+    function availableResultMetrics(games) {
+      return Object.entries(resultMetricDefinitions).filter(([metric]) => (
+        metric === "score" || Object.values(games).some((game) => Object.keys(metricMap(game, metric)).length)
+      ));
+    }
+
+    function renderResults() {
+      const evaluation = resultDataset();
+      const games = scoreGames();
+      if (!evaluation || !Object.keys(games).length) {
+        scoreKpisEl.innerHTML = renderKpi("Evaluation", "Not available", "No evaluation.json");
+        scoreMatrixEl.innerHTML = '<div class="empty-state">This run has trace artifacts but has not been evaluated yet.</div>';
+        gameInspectorEl.innerHTML = '<div class="empty-state">Evaluation details will appear after evaluation.</div>';
+        passBreakdownEl.innerHTML = "";
+        return;
+      }
+
+      const labels = trialLabels(games);
+      const metadata = evaluation.metadata || {};
+      const usage = evaluation.usage?.totals || evaluation.usage || {};
+      const usageMean = evaluation.usage?.mean || {};
+      const trialCount = metadata.trial_count ?? Object.values(games).reduce((sum, game) => sum + Number(game.trial_count || 0), 0);
+      const model = metadata.model || metadata.setup_id || evaluation.score_source || evaluation.source_file;
+      const provisional = evaluation.provisional === true;
+      breakdownTitleEl.textContent = provisional ? "Trace snapshot by pass" : "Evaluation by pass";
+      breakdownSubtitleEl.textContent = provisional
+        ? "Last recorded viewer-artifact state; not evaluation or canonical score"
+        : "Metrics from evaluation.json";
+      scoreKpisEl.innerHTML = (provisional ? [
+        renderKpi("Snapshot mean", dashboardNumber(evaluation.score, 2), "last recorded event · not evaluated"),
+        renderKpi("Games", dashboardNumber(metadata.game_count ?? Object.keys(games).length), `${dashboardNumber(labels.length)} passes`),
+        renderKpi("Views", dashboardNumber(trialCount), metadata.dataset_description),
+        renderKpi("Events", compactNumber(usage.events), "viewer artifact events"),
+        renderKpi("Latest actions", compactNumber(usage.actions), "sum of last action numbers"),
+        renderKpi("Runtime calls", compactNumber(usage.runtime_symbol_uses), "captured symbol usage"),
+      ] : [
+        renderKpi("Overall score", dashboardNumber(evaluation.score, 2), evaluation.source_file || "evaluation.json"),
+        renderKpi("Games", dashboardNumber(metadata.game_count ?? Object.keys(games).length), `${dashboardNumber(labels.length)} passes`),
+        renderKpi("Trials", dashboardNumber(trialCount), metadata.dataset_description || "evaluated attempts"),
+        renderKpi("Total tokens", compactNumber(usage.total_tokens), `mean ${compactNumber(usageMean.total_tokens)} / trial`),
+        renderKpi("Actions", compactNumber(usage.actions), `mean ${dashboardNumber(usageMean.actions, 1)} / trial`),
+        renderKpi("Tokens / action", dashboardNumber(usageMean.tokens_per_action, 0), model || "run metadata"),
+      ]).join("");
+
+      const metrics = availableResultMetrics(games);
+      const hasScoreValues = Object.values(games).some((game) => Object.keys(metricMap(game, "score")).length);
+      if (provisional && !hasScoreValues) matrixMetric = "events";
+      if (!metrics.some(([metric]) => metric === matrixMetric)) matrixMetric = metrics[0]?.[0] || "score";
+      matrixMetricEl.innerHTML = metrics.map(([metric, definition]) => (
+        `<option value="${escapeHtml(metric)}">${escapeHtml(definition.label)}</option>`
+      )).join("");
+      matrixMetricEl.value = matrixMetric;
+
+      let rows = Object.entries(games).map(([gameId, game]) => {
+        const values = labels.map((label) => metricMap(game, matrixMetric)[label]);
+        return { gameId, game, values, average: mean(values), variance: variance(values) };
+      });
+      const sort = matrixSortEl.value;
+      rows.sort((a, b) => sort === "game"
+        ? a.gameId.localeCompare(b.gameId)
+        : sort === "variance"
+          ? (b.variance ?? -Infinity) - (a.variance ?? -Infinity)
+          : (b.average ?? -Infinity) - (a.average ?? -Infinity));
+      if (!selectedResultGame || !games[selectedResultGame]) selectedResultGame = rows[0]?.gameId || null;
+
+      const allValues = finiteValues(rows.flatMap((row) => row.values));
+      const minValue = allValues.length ? Math.min(...allValues) : 0;
+      const maxValue = allValues.length ? Math.max(...allValues) : 0;
+      const range = maxValue - minValue;
+      const header = labels.map((label) => `<th title="${escapeHtml(label)}">${escapeHtml(shortTrialLabel(label))}</th>`).join("");
+      const body = rows.map((row) => {
+        const cells = row.values.map((rawValue, index) => {
+          const value = Number(rawValue);
+          if (rawValue === null || rawValue === undefined || rawValue === "" || !Number.isFinite(value)) return '<td class="matrix-cell missing">—</td>';
+          const heat = range ? (value - minValue) / range : 0.5;
+          const alpha = (0.07 + heat * 0.4).toFixed(3);
+          return `<td class="matrix-cell" style="background:rgba(197,93,31,${alpha})" data-result-game="${escapeHtml(row.gameId)}" data-result-trial="${escapeHtml(labels[index])}" title="${escapeHtml(labels[index])}: ${escapeHtml(metricNumber(value))}">${escapeHtml(metricNumber(value))}</td>`;
+        }).join("");
+        return `<tr><td class="game-col" data-result-game="${escapeHtml(row.gameId)}">${escapeHtml(row.gameId)}</td>${cells}<td class="mean-cell">${escapeHtml(metricNumber(row.average))}</td></tr>`;
+      }).join("");
+      scoreMatrixEl.innerHTML = `<table class="score-matrix"><thead><tr><th class="game-col">Game</th>${header}<th>Mean</th></tr></thead><tbody>${body}</tbody></table>`;
+
+      renderGameInspector(games[selectedResultGame], selectedResultGame, labels);
+      renderPassBreakdown(games, labels);
+    }
+
+    function renderGameInspector(game, gameId, labels) {
+      if (!game) {
+        gameInspectorEl.innerHTML = '<div class="empty-state">Select a game to inspect it.</div>';
+        return;
+      }
+      const values = labels.map((label) => metricMap(game, matrixMetric)[label]);
+      const numeric = finiteValues(values);
+      const scoreValues = finiteValues(labels.map((label) => metricMap(game, "score")[label]));
+      const best = scoreValues.length ? Math.max(...scoreValues) : null;
+      const worst = scoreValues.length ? Math.min(...scoreValues) : null;
+      const tokenMean = game.total_tokens_mean ?? mean(labels.map((label) => metricMap(game, "total_tokens")[label]));
+      const actionMean = game.actions_mean ?? mean(labels.map((label) => metricMap(game, "actions")[label]));
+      const max = numeric.length ? Math.max(...numeric) : 0;
+      const gameOptions = Object.keys(scoreGames()).sort().map((candidate) => (
+        `<option value="${escapeHtml(candidate)}"${candidate === gameId ? " selected" : ""}>${escapeHtml(candidate)}</option>`
+      )).join("");
+      const trials = labels.map((label, index) => {
+        const rawValue = values[index];
+        const value = rawValue === null || rawValue === undefined || rawValue === "" ? NaN : Number(rawValue);
+        const width = Number.isFinite(value) && max > 0 ? Math.max(2, value / max * 100) : 0;
+        return `<div class="trial-row"><span>${escapeHtml(shortTrialLabel(label))}</span><div class="trial-track"><div class="trial-bar" style="width:${width}%"></div></div><span class="trial-value">${escapeHtml(metricNumber(value))}</span></div>`;
+      }).join("");
+      gameInspectorEl.innerHTML = `
+        <div class="inspector-title"><div><select data-result-game-select aria-label="Game for pass details">${gameOptions}</select><div class="score-kpi-note">${escapeHtml(resultMetricDefinitions[matrixMetric].label)} by pass</div></div><button class="trace-link" data-open-game="${escapeHtml(gameId)}">Open trace →</button></div>
+        <div class="inspector-stats">
+          <div class="inspector-stat"><span>${resultDataset()?.provisional ? "Snapshot mean" : "Mean score"}</span><strong>${escapeHtml(dashboardNumber(game.score ?? mean(scoreValues), 2))}</strong></div>
+          <div class="inspector-stat"><span>Best / worst</span><strong>${escapeHtml(dashboardNumber(best, 2))} / ${escapeHtml(dashboardNumber(worst, 2))}</strong></div>
+          <div class="inspector-stat"><span>Mean tokens</span><strong>${escapeHtml(compactNumber(tokenMean))}</strong></div>
+          <div class="inspector-stat"><span>Mean actions</span><strong>${escapeHtml(dashboardNumber(actionMean, 1))}</strong></div>
+          <div class="inspector-stat"><span>Trials</span><strong>${escapeHtml(dashboardNumber(game.trial_count ?? scoreValues.length))}</strong></div>
+          <div class="inspector-stat"><span>Score variance</span><strong>${escapeHtml(dashboardNumber(variance(scoreValues), 2))}</strong></div>
+        </div>
+        <div class="trial-list">${trials || '<div class="empty-state">No per-pass values.</div>'}</div>`;
+    }
+
+    function renderPassBreakdown(games, labels) {
+      if (!labels.length) {
+        passBreakdownEl.innerHTML = '<div class="empty-state">No per-pass breakdown is present in this evaluation.</div>';
+        return;
+      }
+      const rows = labels.map((label) => {
+        const gameList = Object.values(games);
+        const scores = gameList.map((game) => metricMap(game, "score")[label]);
+        const tokens = finiteValues(gameList.map((game) => metricMap(game, "total_tokens")[label]));
+        const events = finiteValues(gameList.map((game) => metricMap(game, "events")[label]));
+        const runtimeCalls = finiteValues(gameList.map((game) => metricMap(game, "runtime_symbol_uses")[label]));
+        const actions = gameList.map((game) => metricMap(game, "actions")[label]);
+        const turns = gameList.map((game) => metricMap(game, "turns")[label]);
+        const provisional = resultDataset()?.provisional;
+        const volume = provisional
+          ? compactNumber(events.reduce((sum, value) => sum + value, 0))
+          : compactNumber(tokens.length ? tokens.reduce((sum, value) => sum + value, 0) : null);
+        const finalValue = provisional
+          ? compactNumber(runtimeCalls.reduce((sum, value) => sum + value, 0))
+          : `${finiteValues(scores).length} / ${gameList.length}`;
+        return `<tr><td>${escapeHtml(shortTrialLabel(label))}</td><td>${escapeHtml(dashboardNumber(mean(scores), 2))}</td><td>${escapeHtml(volume)}</td><td>${escapeHtml(dashboardNumber(mean(actions), 1))}</td><td>${escapeHtml(dashboardNumber(mean(turns), 1))}</td><td>${escapeHtml(finalValue)}</td></tr>`;
+      }).join("");
+      const provisional = resultDataset()?.provisional;
+      const scoreHeading = provisional ? "Snapshot mean" : "Mean score";
+      const volumeHeading = provisional ? "Events" : "Total tokens";
+      const finalHeading = provisional ? "Runtime calls" : "Coverage";
+      passBreakdownEl.innerHTML = `<table class="pass-table"><thead><tr><th>Pass</th><th>${scoreHeading}</th><th>${volumeHeading}</th><th>Mean actions</th><th>Mean turns</th><th>${finalHeading}</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    function openTrace(gameId, trialLabel = "") {
+      const splitLabel = String(trialLabel).match(/(?:pass|seed)-([^/]+)$/)?.[1] || "";
+      let index = payload?.games?.findIndex((game) => (
+        game.game_id === gameId
+        && (!splitLabel || String(game.pass_label ?? game.seed_label ?? "") === splitLabel)
+      ));
+      if (index == null || index < 0) index = payload?.games?.findIndex((game) => game.game_id === gameId);
+      if (index == null || index < 0) return;
+      currentGameIndex = index;
+      gameSelectEl.value = String(index);
+      switchView("trace");
+      loadGameDetails(index, { preserveSelection: false, silent: false });
+    }
+
     function renderHeader() {
       const gameCount = payload.games.length;
       const availableRuns = payload.available_runs || [];
@@ -1024,7 +1451,7 @@
         : hasSeedViews
           ? `${gameCount} game/seed view${gameCount === 1 ? "" : "s"}`
         : `${gameCount} game${gameCount === 1 ? "" : "s"}`;
-      runSubtitleEl.textContent = `${payload.run_name} · ${gameCountLabel} · ${runOptions.length} run${runOptions.length === 1 ? "" : "s"} available`;
+      runSubtitleEl.textContent = `${gameCountLabel} · ${runOptions.length} run${runOptions.length === 1 ? "" : "s"} available`;
       runSelectEl.innerHTML = runOptions.map((runName) => (
         `<option value="${escapeHtml(runName)}">${escapeHtml(runName)}</option>`
       )).join("");
@@ -1042,6 +1469,8 @@
         return `<option value="${index}">${escapeHtml(label)}</option>`;
       }).join("");
       gameSelectEl.value = String(currentGameIndex);
+      switchView(currentView);
+      renderResults();
     }
 
     function renderGame(options = {}) {
