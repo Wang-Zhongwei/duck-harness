@@ -322,12 +322,12 @@ make view VIEW_RUN_DIR=/shared/arc_3_results/$USER/<run-name>
 The viewer shows run summaries, per-game progress, boards, actions, rewards,
 level transitions, and the duck's transcript.
 
-## Scoring
+## Evaluation
 
-Score one run directory:
+Evaluate one run directory:
 
 ```bash
-make score_run SCORE_RUN_DIR=/path/to/run
+make evaluate_run EVALUATE_RUN_DIR=/path/to/run
 ```
 
 Evaluate runs from `configs/eval.json`:
@@ -336,16 +336,15 @@ Evaluate runs from `configs/eval.json`:
 make eval
 ```
 
-Write a score file somewhere specific:
+Write the evaluation file somewhere specific:
 
 ```bash
-make score_run SCORE_RUN_DIR=/path/to/run SCORE_OUTPUT_PATH=docs/candidate-score.json
+make evaluate_run EVALUATE_RUN_DIR=/path/to/run EVALUATION_OUTPUT_PATH=docs/candidate-evaluation.json
 ```
 
-The scorer reads TAAF `benchmark.json`, uses persisted `final_score` values when
+The evaluator reads TAAF `benchmark.json`, uses persisted `final_score` values when
 present, and otherwise asks TAAF's `GameRun` scorer to compute the score from
-the saved state. It writes `evaluation.json` plus the lightweight `score.json`
-format used by significance checks.
+the saved state. It writes one consolidated `evaluation.json`, which is also used by significance checks.
 
 Each single-run scoring also upserts the complete payload as that run's
 `public` score in `runs/inference_score_comparison.json`. The versioned
@@ -444,8 +443,8 @@ transitions linked back to message indices.
 - `make sbatch`: submit through TAAF Slurm deployment.
 - `make chat PROMPT="..."`: send a direct chat probe to the configured model.
 - `make view`: serve the run viewer.
-- `make score_run SCORE_RUN_DIR=...`: score one saved run.
-- `make eval`: score runs selected by an eval config.
+- `make evaluate_run EVALUATE_RUN_DIR=...`: evaluate one saved run.
+- `make eval`: evaluate runs selected by an eval config.
 - `make significance`: compare two score files.
 - `make traces`: export trace JSON.
 - `make zip`: zip the local `runs/` directory.
