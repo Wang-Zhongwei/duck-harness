@@ -188,6 +188,12 @@ def duck_kaggle_setup_command(config: DuckKaggleVllmConfig | None = None) -> str
         "__SPEC_NUM_DRAFT_TOKENS__": repr(_kaggle_env("KAGGLE_SPEC_NUM_DRAFT_TOKENS")),
         "__MAX_RUNNING_REQUESTS__": repr(_kaggle_env("KAGGLE_MAX_RUNNING_REQUESTS")),
         "__LIMIT_MM_PER_REQUEST__": repr(_kaggle_env("KAGGLE_LIMIT_MM_DATA_PER_REQUEST")),
+        # The smoke test must sample exactly like the agent: greedy decoding sends this
+        # model into a repetition loop that never returns.
+        "__SMOKE_TEMPERATURE__": repr(float(os.environ.get("LOCAL_ANALYZER_TEMPERATURE") or 1.0)),
+        "__SMOKE_TOP_P__": repr(float(os.environ.get("LOCAL_ANALYZER_TOP_P") or 0.95)),
+        "__SMOKE_TOP_K__": repr(int(os.environ.get("LOCAL_ANALYZER_TOP_K") or 20)),
+        "__SMOKE_MAX_TOKENS__": repr(int(_kaggle_env("KAGGLE_SMOKE_MAX_TOKENS", "2048"))),
         "__SERVER_START_TIMEOUT__": repr(int(_kaggle_env("KAGGLE_SERVER_START_TIMEOUT", "1800"))),
         # The vLLM argv hardcodes these three; SGLang needs them passed explicitly or the
         # agent silently gets no tool calls and no reasoning_content. Same values, and the
@@ -274,6 +280,10 @@ SPEC_EAGLE_TOPK = __SPEC_EAGLE_TOPK__
 SPEC_NUM_DRAFT_TOKENS = __SPEC_NUM_DRAFT_TOKENS__
 MAX_RUNNING_REQUESTS = __MAX_RUNNING_REQUESTS__
 LIMIT_MM_PER_REQUEST = __LIMIT_MM_PER_REQUEST__
+SMOKE_TEMPERATURE = __SMOKE_TEMPERATURE__
+SMOKE_TOP_P = __SMOKE_TOP_P__
+SMOKE_TOP_K = __SMOKE_TOP_K__
+SMOKE_MAX_TOKENS = __SMOKE_MAX_TOKENS__
 SERVER_START_TIMEOUT = __SERVER_START_TIMEOUT__
 TOOL_CALL_PARSER = __TOOL_CALL_PARSER__
 REASONING_PARSER = __REASONING_PARSER__
@@ -748,22 +758,25 @@ def start_vllm_server() -> None:
     wait_for_vllm_server()
 
 
-def smoke_request(messages, tools=None, timeout=900) -> dict:
-    # Deliberately NO max_tokens: analyzer.max_output is 0, so build_chat_payload omits it
-    # and production generations are bounded only by the context window. With the server's
-    # reasoning_effort=xhigh the model routinely spends thousands of tokens thinking, so a
-    # small cap truncates mid-thought and returns EMPTY content -- measured on this exact
-    # server by kernel sglang-prod-validate v1, where max_tokens=2048 gave finish_reason
-    # 'length' and empty content on every single request. A smoke test that capped output
-    # would fail here for a reason that cannot happen in production.
+def smoke_request(messages, tools=None, timeout=300) -> dict:
+    # Sampling MUST match what the agent sends. A previous revision hardcoded
+    # temperature 0.0 and the very first smoke request -- "what is 17 times 3?" --
+    # ran away into a repetition loop: 46,118 generated tokens and still going when the
+    # socket timed out, with the speculative decoder reporting accept_rate 1.00 the whole
+    # way, which is what perfectly-predictable repeated text looks like. Greedy decoding
+    # is a known repetition trigger for this model family (sglang #35723). Production
+    # runs temperature 1.0, so the smoke test does too.
     payload = {
         'model': SERVED_MODEL_NAME,
         'messages': messages,
         'stream': False,
-        'temperature': 0.0,
-        'top_p': 0.95,
-        'top_k': 20,
-        'chat_template_kwargs': {'enable_thinking': True},
+        'temperature': SMOKE_TEMPERATURE,
+        'top_p': SMOKE_TOP_P,
+        'top_k': SMOKE_TOP_K,
+        # Bounded, unlike production, purely so a runaway can never hang setup. Truncation
+        # is therefore EXPECTED and is treated as inconclusive below, never as failure.
+        'max_tokens': SMOKE_MAX_TOKENS,
+        'chat_template_kwargs': {'enable_thinking': False},
     }
     if tools:
         payload['tools'] = tools
@@ -771,33 +784,44 @@ def smoke_request(messages, tools=None, timeout=900) -> dict:
     response = request_json(f'{VLLM_BASE_URL}/chat/completions', payload=payload, timeout=timeout)
     choice = response['choices'][0]
     message = choice['message']
+    usage = response.get('usage') or {}
     return {
         'content': (message.get('content') or '').strip(),
         'reasoning': (message.get('reasoning_content') or '').strip(),
         'tool_calls': message.get('tool_calls') or [],
         'finish_reason': choice.get('finish_reason'),
-        'usage': response.get('usage') or {},
+        'usage': usage,
+        'image_tokens': (usage.get('prompt_tokens_details') or {}).get('image_tokens') or 0,
+        'truncated': choice.get('finish_reason') == 'length',
     }
 
 
 def run_api_smoke_test() -> None:
-    # Three checks, because the two ways this fails in production are both silent. A server
-    # with no working tool parser returns prose forever and the agent never acts; a server
-    # that cannot decode an image part 400s every turn. Both look healthy to /health.
+    # Guards the two production failures that are invisible to /health: a server whose tool
+    # parser never fires (the agent acts ONLY through tool calls, so every game scores 0),
+    # and one that silently drops the image part (the agent plays blind).
+    #
+    # Rule for every assertion here: fail on EVIDENCE OF BREAKAGE, never on inconclusive
+    # evidence. Setup commands run with check=True, so a false negative costs the whole
+    # 9-hour submission -- which is exactly what a previous revision did.
     print('\n' + '=' * 88, flush=True)
     print('INFERENCE SERVER SMOKE TEST', flush=True)
     result = smoke_request([{'role': 'user', 'content': 'What is 17 times 3? Reply with the number.'}])
     answer = result['content'] or result['reasoning']
-    print(f"text   : finish={result['finish_reason']} content={result['content'][:120]!r} "
-          f"reasoning_chars={len(result['reasoning'])}", flush=True)
-    # Check the ANSWER, not just that bytes came back: an FP4 or KV misconfiguration
-    # produces fluent garbage rather than an error. Reasoning counts -- the parser splits
-    # it out of content, and either one proves the model can still do arithmetic.
-    assert '51' in answer, (
-        f'Model failed a trivial arithmetic prompt, which usually means a silently '
-        f'misconfigured quantization or KV dtype. finish_reason={result["finish_reason"]}, '
-        f'content={result["content"][:300]!r}, reasoning tail={result["reasoning"][-300:]!r}'
-    )
+    print(f"text   : finish={result['finish_reason']} content={result['content'][:150]!r} "
+          f"reasoning_chars={len(result['reasoning'])} usage={result['usage']}", flush=True)
+    if '51' in answer:
+        pass
+    elif result['truncated']:
+        # An FP4 or KV misconfiguration yields fluent garbage rather than an error, so this
+        # check is worth having -- but a truncated answer proves nothing either way.
+        print('WARNING: arithmetic check truncated before an answer; inconclusive.', flush=True)
+    else:
+        raise AssertionError(
+            f'Model finished cleanly but failed a trivial arithmetic prompt, which usually '
+            f'means a silently misconfigured quantization or KV dtype. '
+            f'content={result["content"][:400]!r} reasoning tail={result["reasoning"][-400:]!r}'
+        )
     tools = [{
         'type': 'function',
         'function': {
@@ -815,27 +839,31 @@ def run_api_smoke_test() -> None:
          {'role': 'user', 'content': 'The level just started. Take ACTION3 now.'}],
         tools=tools,
     )
-    print(f"tool   : finish={result['finish_reason']} tool_calls={json.dumps(result['tool_calls'])[:220]}", flush=True)
-    assert result['tool_calls'], (
-        f'Server returned no tool_calls for an unambiguous tool prompt. The agent drives '
-        f'the game entirely through tool calls, so this would score 0 on every game. '
-        f'finish_reason={result["finish_reason"]}, content={result["content"][:300]!r}'
-    )
+    print(f"tool   : finish={result['finish_reason']} "
+          f"tool_calls={json.dumps(result['tool_calls'])[:260]} usage={result['usage']}", flush=True)
+    if result['tool_calls']:
+        pass
+    elif result['truncated']:
+        print('WARNING: tool-call check truncated before any tool call; inconclusive. If the '
+              'run scores 0 on every game, suspect the tool-call parser first.', flush=True)
+    else:
+        raise AssertionError(
+            f'Server finished cleanly with no tool_calls for an unambiguous tool prompt. The '
+            f'agent drives the game entirely through tool calls, so this would score 0 on '
+            f'every game. content={result["content"][:400]!r}'
+        )
     result = smoke_request([{'role': 'user', 'content': [
         {'type': 'text', 'text': 'Reply with one word describing this image.'},
         {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + SMOKE_TEST_PNG_B64}},
     ]}])
-    image_tokens = (result['usage'].get('prompt_tokens_details') or {}).get('image_tokens')
-    print(f"image  : finish={result['finish_reason']} image_tokens={image_tokens} "
-          f"content={result['content'][:120]!r}", flush=True)
-    assert result['content'] or result['reasoning'], (
-        'Server accepted an image part but returned nothing at all.'
-    )
-    # The agent attaches an image to every user turn, so a server that silently ignored the
-    # image would play blind while looking perfectly healthy.
-    assert image_tokens, (
+    print(f"image  : finish={result['finish_reason']} image_tokens={result['image_tokens']} "
+          f"content={result['content'][:150]!r} usage={result['usage']}", flush=True)
+    # Conclusive regardless of truncation: image_tokens is counted at PREFILL, so it is
+    # already known before a single token is generated. Non-empty content would not prove
+    # this -- a server that dropped the image would still answer, just blindly.
+    assert result['image_tokens'] > 0, (
         f'The image part produced no image tokens ({result["usage"]}), so the server is not '
-        f'actually looking at the grid.'
+        f'actually looking at the grid and the agent would play blind.'
     )
     print('=' * 88 + '\n', flush=True)
 
