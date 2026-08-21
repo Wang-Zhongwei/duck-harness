@@ -152,6 +152,11 @@ SERVER_TENSOR_PARALLEL_SIZE ?= $(shell $(CONFIG_VALUE) server.tensor_parallel_si
 SERVER_MAX_MODEL_LEN ?= $(shell $(CONFIG_VALUE) server.max_model_len $(SERVER_SHARED_CONTEXT_WINDOW))
 SERVER_DTYPE ?= $(shell $(CONFIG_VALUE) server.dtype)
 SERVER_QUANTIZATION ?= $(shell $(CONFIG_VALUE) server.quantization)
+# FP8 KV doubles the attention block size (800 -> 1600 tokens), lifting concurrency
+# ~1.77x rather than 2x: the 12 GDN state blocks per request are dtype-independent.
+# vLLM gates FP8 KV on device capability family 90, so this works on the H100 nodes
+# and is silently unsupported elsewhere -- check the engine's kv_cache_dtype line in
+# server.log rather than assuming the flag took.
 SERVER_KV_CACHE_DTYPE ?= $(shell $(CONFIG_VALUE) server.kv_cache_dtype)
 SERVER_MAX_NUM_SEQS ?= $(shell $(CONFIG_VALUE) server.max_num_seqs)
 SERVER_GPU_MEMORY_UTILIZATION ?= $(shell $(CONFIG_VALUE) server.gpu_memory_utilization)
@@ -196,8 +201,6 @@ SERVER_APPTAINER_SIF ?= $(VLLM_CONTAINER_STORE)/vllm-openai.sif
 SERVER_APPTAINER_HF_HOME ?= $(VLLM_CONTAINER_STORE)/hf
 SERVER_APPTAINER_ATTENTION_BACKEND ?= FLASHINFER
 SERVER_APPTAINER_HF_OFFLINE ?= 1
-SERVER_MAX_IMAGES ?= $(shell $(CONFIG_VALUE) server.max_images 4)
-SERVER_MAX_VIDEOS ?= $(shell $(CONFIG_VALUE) server.max_videos 0)
 
 LOCAL_ANALYZER_BASE_URL ?= $(shell $(CONFIG_VALUE) analyzer.base_url $(AUTO_ANALYZER_BASE_URL))
 LOCAL_ANALYZER_PROVIDER ?= $(shell $(CONFIG_VALUE) analyzer.provider $(SHARED_PROVIDER))

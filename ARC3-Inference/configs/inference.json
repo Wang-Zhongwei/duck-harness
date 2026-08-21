@@ -50,7 +50,6 @@
     "generation_config": "vllm",
     "language_model_only": false,
     "enable_prefix_caching": true,
-    "max_images": 4,
     "tool_call_parser": "qwen3_coder",
     "reasoning_parser": "qwen3",
     "speculative_config": {"method": "mtp", "num_speculative_tokens": 2},
