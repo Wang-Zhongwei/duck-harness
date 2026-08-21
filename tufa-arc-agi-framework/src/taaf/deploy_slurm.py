@@ -42,6 +42,7 @@ GPU = Literal["B200", "B300", "RTX", "H100", "A100", "CPU"]
 _GPU_GRES_NAMES: dict[str, str | None] = {
     "B200": "b200",
     "B300": "b300",
+    "H100": "h100",
     "RTX": "rtx",
     "H100": "h100",
     "A100": "a100",
@@ -138,7 +139,7 @@ class TufaSlurmTarget(taaf.deploy.DeploymentTarget):
 
     Fields:
 
-    - ``gpu``: hardware tier — ``B200`` / ``B300`` / ``RTX`` or ``CPU``
+    - ``gpu``: hardware tier — ``B200`` / ``B300`` / ``H100`` / ``RTX`` or ``CPU``
       (no GPU, useful for fast smoke tests). Mapped via the
       module-level ``_GPU_GRES_NAMES`` table.
     - ``time``: sbatch walltime, e.g. ``"04:00:00"``. Hard upper bound;
@@ -181,6 +182,7 @@ class TufaSlurmTarget(taaf.deploy.DeploymentTarget):
     extra_sbatch_flags: list[str] = field(default_factory=lambda: list[str]())
     extra_source_repos: list[Path] = field(default_factory=lambda: list[Path](), kw_only=True)
     main_project: str = field(kw_only=True)
+    launcher_venv: Path | None = field(default=None, kw_only=True)
 
     async def deploy(self, benchmark: taaf.benchmark.Benchmark) -> TufaSlurmHandle:
         if benchmark.job_dir is None:
@@ -510,23 +512,24 @@ def _render_sbatch_script(
 
 
 def _render_install_block(target: TufaSlurmTarget, job_dir: Path) -> list[str]:
-    """Bash lines building the worker's per-run venv (R2.37) from the
-    bundled sources under ``$JOB_DIR/src/``.
+    """Bash lines setting up the worker's Python environment.
 
-    Always ``uv sync`` from ``src/<target.main_project>``'s pyproject —
-    it's the only uv command that honours ``[tool.uv.sources]`` path
-    rewrites, and degenerates to a plain locked install when none are
-    declared. ``UV_OVERRIDE`` lets a launcher point at a requirements
-    file whose entries are then installed ``--no-deps`` afterward.
+    When ``target.launcher_venv`` is set, the worker reuses the
+    launcher's existing venv (shared via NFS) — no ``uv sync``, no
+    network access required. This is the right mode for offline
+    clusters where compute nodes cannot reach PyPI.
 
-    The sync runs inside a ``flock``ed subshell on ``$UV_CACHE_DIR``:
-    in no-image mode the cache lives on (often-NFS) ``$HOME/.cache/uv``
-    where concurrent jobs would race; in image mode the cache is
-    container-local and the lock is a no-op.
+    Otherwise, builds a per-run ``.venv`` from the bundled sources
+    under ``$JOB_DIR/src/`` (R2.37).
 
     Factored out so tests can bash-execute it against fixture sources
     rather than only string-asserting the rendered output.
     """
+    if target.launcher_venv is not None:
+        venv = shlex.quote(str(target.launcher_venv))
+        return [
+            f'source {venv}/bin/activate',
+        ]
     return [
         'UV_CACHE_DIR="${UV_CACHE_DIR:-$HOME/.cache/uv}"',
         'mkdir -p "$(dirname "${UV_CACHE_DIR}")"',
@@ -534,7 +537,7 @@ def _render_install_block(target: TufaSlurmTarget, job_dir: Path) -> list[str]:
         "(",
         "    flock 9",
         f"    cd {shlex.quote(str(job_dir / 'src' / target.main_project))}",
-        "    uv sync",
+        "    uv sync --frozen --offline",
         '    if [ -n "${UV_OVERRIDE:-}" ]; then',
         '        if [ ! -f "${UV_OVERRIDE}" ]; then',
         '            echo "UV_OVERRIDE points to a missing file: ${UV_OVERRIDE}" >&2',

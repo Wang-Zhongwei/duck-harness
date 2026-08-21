@@ -146,6 +146,101 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
         __repr__ = __str__
 
 
+    DIFF_CELL_DETAIL_LIMIT = 12
+
+
+    DIFF_GROUP_FIELDS = ("from_color", "to_color", "count", "bbox", "cells")
+
+    # Names that read like diff-group fields but are not. ``from``/``to`` were renamed
+    # to ``from_color``/``to_color`` because they hold a single ARC color char, not a
+    # node -- the old names invited ``group['from']['color']``.
+    DIFF_GROUP_FIELD_HINTS = {
+        "from": "from_color (a single color char, e.g. 'B')",
+        "to": "to_color (a single color char, e.g. 'B')",
+        "color": "from_color / to_color",
+        "colors": "from_color / to_color",
+        "n": "count",
+        "size": "count",
+        "pixels": "count",
+        "px": "count",
+    }
+
+
+    class DiffGroup(dict):
+        def __missing__(self, key):
+            hint = DIFF_GROUP_FIELD_HINTS.get(key)
+            fields = ", ".join(DIFF_GROUP_FIELDS)
+            if hint is not None:
+                raise KeyError(
+                    f"diff group has no field {key!r}; use {hint}. "
+                    f"Diff-group fields: {fields}."
+                )
+            raise KeyError(
+                f"diff group has no field {key!r}. Diff-group fields: {fields}."
+            )
+
+        def __repr__(self):
+            if self["count"] <= DIFF_CELL_DETAIL_LIMIT:
+                return dict.__repr__(self)
+            folded = dict(self)
+            folded["cells"] = (
+                f"<{self['count']} cells; inspect group['cells'] for coordinates>"
+            )
+            return repr(folded)
+
+        __str__ = __repr__
+
+
+    def frame_diff(before_frame, after_frame):
+        # Group every cell change by color transition. Large coordinate lists are
+        # folded only in the representation; the object retains every cell.
+        if not isinstance(before_frame, FrameView) or not isinstance(after_frame, FrameView):
+            raise TypeError("frame_diff(before, after) expects two frame views.")
+        if before_frame.shape != after_frame.shape:
+            raise ValueError(
+                "frame_diff requires equal frame shapes; "
+                f"got {before_frame.shape} and {after_frame.shape}."
+            )
+
+        grouped = {}
+        cells_changed = 0
+        rows, cols = before_frame.shape
+        for r in range(rows):
+            for c in range(cols):
+                before_value = before_frame._grid[r][c]
+                after_value = after_frame._grid[r][c]
+                if before_value == after_value:
+                    continue
+                before_color = COLOR_CHARS[max(0, min(15, int(before_value)))]
+                after_color = COLOR_CHARS[max(0, min(15, int(after_value)))]
+                grouped.setdefault((before_color, after_color), []).append([r, c])
+                cells_changed += 1
+
+        groups = []
+        for (before_color, after_color), cells in grouped.items():
+            rs = [cell[0] for cell in cells]
+            cs = [cell[1] for cell in cells]
+            groups.append(
+                DiffGroup(
+                    {
+                        "from_color": before_color,
+                        "to_color": after_color,
+                        "count": len(cells),
+                        # Flat [r0, c0, r1, c1], same layout as a segmentation node's bbox.
+                        "bbox": [min(rs), min(cs), max(rs), max(cs)],
+                        "cells": cells,
+                    }
+                )
+            )
+        groups.sort(
+            key=lambda group: (-group["count"], group["from_color"], group["to_color"])
+        )
+        return {"cells_changed": cells_changed, "groups": groups}
+
+
+    diff = frame_diff
+
+
     class HistoryEntryView:
         def __init__(self, *, action, frame):
             self.action = action
@@ -164,6 +259,13 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
             self.after_frame = after_frame
             self.frame = after_frame
             self.result = dict(result) if isinstance(result, dict) else {}
+            self._diff = None
+
+        @property
+        def diff(self):
+            if self._diff is None and self.before_frame is not None and self.after_frame is not None:
+                self._diff = frame_diff(self.before_frame, self.after_frame)
+            return self._diff
 
         def __str__(self):
             return (
@@ -325,6 +427,8 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
                 for name in SAFE_BUILTINS
             },
             "result": None,
+            "frame_diff": frame_diff,
+            "diff": diff,
         }
         runtime_globals["__builtins__"]["__import__"] = _safe_import
 
@@ -367,6 +471,42 @@ _SANDBOX_BOOTSTRAP = textwrap.dedent(
             return action_result
 
         runtime_globals["action"] = action
+
+        def update_memory(world_model=None, goal_model=None, action_model=None,
+                          recent_findings=None, open_questions=None, plan=None,
+                          cross_level_notes=None):
+            fields = {
+                name: value
+                for name, value in {
+                    "world_model": world_model,
+                    "goal_model": goal_model,
+                    "action_model": action_model,
+                    "recent_findings": recent_findings,
+                    "open_questions": open_questions,
+                    "plan": plan,
+                    "cross_level_notes": cross_level_notes,
+                }.items()
+                if value is not None
+            }
+            if not fields:
+                raise ValueError(
+                    "update_memory() needs at least one field, e.g. "
+                    "update_memory(world_model=...)."
+                )
+            non_string = [name for name, value in fields.items() if not isinstance(value, str)]
+            if non_string:
+                raise TypeError(
+                    f"update_memory() fields must be strings: {', '.join(sorted(non_string))}"
+                )
+            _send({"type": "memory", "fields": fields})
+            reply = _recv()
+            if reply.get("type") == "memory_error":
+                raise RuntimeError(str(reply.get("error", "update_memory failed")))
+            if reply.get("type") != "memory_result":
+                raise RuntimeError("Invalid update_memory response from sandbox host.")
+            return {"updated": list(reply.get("updated") or [])}
+
+        runtime_globals["update_memory"] = update_memory
         _refresh_state(initial.get("state") or {})
 
         try:
@@ -451,6 +591,7 @@ def run_sandboxed_python(
     timeout_seconds: int,
     initial_state: dict[str, Any],
     action_handler: Callable[[list[dict[str, Any]]], dict[str, Any]],
+    memory_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="rgb_python_tool_") as sandbox_dir:
         host_action_results: list[dict[str, Any]] = []
@@ -557,6 +698,38 @@ def run_sandboxed_python(
                         "state": action_result_payload.get("state") or {},
                     },
                 )
+                continue
+
+            if msg_type == "memory":
+                if memory_handler is None:
+                    _send_json_line(
+                        process.stdin,
+                        {
+                            "type": "memory_error",
+                            "error": "update_memory is not available in this session.",
+                        },
+                    )
+                    continue
+                try:
+                    memory_payload = memory_handler(dict(message.get("fields") or {}))
+                except Exception:  # noqa: BLE001
+                    memory_payload = {"error": "update_memory failed in sandbox host."}
+                if memory_payload.get("error"):
+                    _send_json_line(
+                        process.stdin,
+                        {
+                            "type": "memory_error",
+                            "error": str(memory_payload["error"]),
+                        },
+                    )
+                else:
+                    _send_json_line(
+                        process.stdin,
+                        {
+                            "type": "memory_result",
+                            "updated": list(memory_payload.get("updated") or []),
+                        },
+                    )
                 continue
 
             if msg_type in {"final", "error"}:

@@ -5,6 +5,7 @@ import argparse
 import gzip
 import json
 import logging
+import mimetypes
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,6 +20,8 @@ from viewer.data import load_game_payload, load_game_shell_payload, load_game_st
 
 log = logging.getLogger(__name__)
 _GZIP_MIN_BYTES = 1024
+_STATIC_SUBDIRS = {"solver_analysis", "movies"}
+_SPLIT_STATIC_SUBDIRS = {"passes", "seeds"}
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,26 @@ def _requested_run_dir(*, runs_dir: Path, default_run_dir: Path | None, requeste
     return runs_dir / requested_name
 
 
+def _resolve_static_file(run_dir: Path | None, rel_path: Path) -> Path | None:
+    """Find *rel_path* inside *run_dir* or any of its pass/seed sub-dirs."""
+    if run_dir is None:
+        return None
+    candidate = run_dir / rel_path
+    if candidate.is_file():
+        return candidate
+    for sub in ("passes", "seeds"):
+        sub_dir = run_dir / sub
+        if not sub_dir.is_dir():
+            continue
+        for child in sub_dir.iterdir():
+            if not child.is_dir():
+                continue
+            candidate = child / rel_path
+            if candidate.is_file():
+                return candidate
+    return None
+
+
 class _ViewerHandler(BaseHTTPRequestHandler):
     """Serve the viewer shell and run payload API."""
 
@@ -113,7 +136,43 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/game-step":
             self._handle_game_step_api(parsed.query)
             return
+        if self._try_serve_static(parsed.path, parsed.query):
+            return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+
+    def _try_serve_static(self, path: str, query: str) -> bool:
+        rel = path.lstrip("/")
+        parts = Path(rel).parts
+        if not parts or ".." in parts:
+            return False
+        if parts[0] in _STATIC_SUBDIRS:
+            safe_rel = Path(*parts)
+        elif len(parts) >= 3 and parts[0] in _SPLIT_STATIC_SUBDIRS and parts[2] in _STATIC_SUBDIRS:
+            safe_rel = Path(*parts)
+        else:
+            return False
+        params = parse_qs(query)
+        requested_run = params.get("run", [None])[0]
+        run_dir = _requested_run_dir(
+            runs_dir=self.runs_dir,
+            default_run_dir=self.run_dir,
+            requested_run=requested_run,
+        )
+        resolved = _resolve_static_file(run_dir, safe_rel)
+        if resolved is None:
+            return False
+        content_type = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
+        body = resolved.read_bytes()
+        body = self._maybe_gzip(body)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        if body.is_gzipped:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+        self.send_header("Content-Length", str(len(body.body)))
+        self.end_headers()
+        self.wfile.write(body.body)
+        return True
 
     def log_message(self, fmt: str, *args) -> None:
         log.info("%s - %s", self.address_string(), fmt % args)

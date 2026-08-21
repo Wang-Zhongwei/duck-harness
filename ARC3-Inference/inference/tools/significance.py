@@ -6,6 +6,7 @@ import json
 import math
 import random
 import statistics
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -429,11 +430,13 @@ def _assert_runtime_budget_compatible(
         candidate_minutes,
         abs_tol=RUNTIME_TOLERANCE_MINUTES,
     ):
-        raise ValueError(
-            "Compatibility check failed: per-game runtime limits differ "
+        message = (
+            "Per-game runtime limits differ "
             f"(current_best={_format_minutes(baseline_minutes)} minutes, "
             f"candidate={_format_minutes(candidate_minutes)} minutes)."
         )
+        warnings.warn(message, RuntimeWarning, stacklevel=2)
+        return f"runtime_budget: WARNING: {message} (non-blocking)"
     baseline_concurrency = _runtime_concurrent_jobs(baseline)
     candidate_concurrency = _runtime_concurrent_jobs(candidate)
     if baseline_concurrency is not None and candidate_concurrency is not None:

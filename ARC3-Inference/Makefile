@@ -13,6 +13,7 @@ RUNS_ZIP ?= $(REPO_ROOT)/runs.zip
 UV ?= uv
 UV_RUN ?= $(UV) run --no-sync
 PYTHON ?= python3
+MAKE_BIN ?= make
 CONFIG_PATH_ORIGIN := $(origin CONFIG_PATH)
 CONFIG_PATH ?= configs/inference.json
 CONFIG_VALUE = $(PYTHON) inference/tools/config_value.py "$(CONFIG_PATH)"
@@ -115,19 +116,44 @@ SERVER_STATUS_EVERY ?= 10
 SERVER_LOG_TAIL_LINES ?= 80
 SERVER_TAIL_ON_WAIT ?= false
 SERVER_HEALTH_URL ?= http://127.0.0.1:$(SERVER_PORT)/v1/models
+SERVER_RUNTIME ?= apptainer
+SERVER_REQUIRE_SLURM ?= $(if $(filter apptainer,$(SERVER_RUNTIME)),true,false)
+SERVE_LOGIN_HOST ?= coe-hpc3
+SERVE_REMOTE_DIR ?= $(REPO_ROOT)
+SBATCH_LOGIN_HOST ?= $(SERVE_LOGIN_HOST)
+SBATCH_REMOTE_DIR ?= $(REPO_ROOT)
+SERVE_SERVER_HOST ?= 0.0.0.0
+SERVE_SERVER_START_TIMEOUT ?= 1800
+SERVE_SLURM_JOB_NAME ?= arc3-vllm-serve
+SERVE_SLURM_PARTITION ?= gpuqs
+SERVE_SLURM_GRES ?= gpu:h100:1
+SERVE_SLURM_CPUS_PER_TASK ?= 12
+SERVE_SLURM_MEM ?= 96G
+SERVE_SLURM_TIME ?= 13:00:00
+SERVE_SLURM_OUTPUT ?= container/logs/serve-%j.out
+SERVE_SLURM_ERROR ?= container/logs/serve-%j.err
+SERVE_SLURM_EXTRA_FLAGS ?=
 
 SHARED_MODEL_NAME ?= $(shell $(CONFIG_VALUE) shared.model_name)
 SHARED_BASE_URL ?= $(shell $(CONFIG_VALUE) shared.base_url http://127.0.0.1:$(SERVER_PORT)/v1)
+AUTO_ANALYZER_BASE_URL ?= $(if $(strip $(REMOTE_SERVER_HOST)),http://$(REMOTE_SERVER_HOST):$(SERVER_PORT)/v1,$(SHARED_BASE_URL))
 SHARED_PROVIDER ?= $(shell $(CONFIG_VALUE) shared.provider vllm)
 SHARED_CONTEXT_WINDOW ?= $(shell $(CONFIG_VALUE) shared.context_window 65536)
 
 SERVER_SHARED_MODEL_NAME ?= $(shell $(CONFIG_VALUE) shared.model_name)
 SERVER_SHARED_CONTEXT_WINDOW ?= $(shell $(CONFIG_VALUE) shared.context_window 65536)
 SERVER_MODEL ?= $(shell $(CONFIG_VALUE) server.model $(SERVER_SHARED_MODEL_NAME))
+SERVER_MODEL_CACHE_REPO ?= $(subst /,--,$(SERVER_MODEL))
+SERVER_MODEL_CACHE_DIR ?= $(SERVER_APPTAINER_HF_HOME)/hub/models--$(SERVER_MODEL_CACHE_REPO)
+SERVER_MODEL_CACHE_REVISION ?= $(shell cat "$(SERVER_MODEL_CACHE_DIR)/refs/main" 2>/dev/null)
+SERVER_MODEL_PATH ?= $(if $(strip $(SERVER_MODEL_CACHE_REVISION)),$(if $(wildcard $(SERVER_MODEL_CACHE_DIR)/snapshots/$(SERVER_MODEL_CACHE_REVISION)/config.json),$(SERVER_MODEL_CACHE_DIR)/snapshots/$(SERVER_MODEL_CACHE_REVISION),$(SERVER_MODEL)),$(SERVER_MODEL))
 SERVER_SERVED_MODEL_NAME ?= $(shell $(CONFIG_VALUE) server.served_model_name $(SERVER_SHARED_MODEL_NAME))
 SERVER_TENSOR_PARALLEL_SIZE ?= $(shell $(CONFIG_VALUE) server.tensor_parallel_size 1)
 SERVER_MAX_MODEL_LEN ?= $(shell $(CONFIG_VALUE) server.max_model_len $(SERVER_SHARED_CONTEXT_WINDOW))
 SERVER_DTYPE ?= $(shell $(CONFIG_VALUE) server.dtype)
+SERVER_QUANTIZATION ?= $(shell $(CONFIG_VALUE) server.quantization)
+SERVER_KV_CACHE_DTYPE ?= $(shell $(CONFIG_VALUE) server.kv_cache_dtype)
+SERVER_MAX_NUM_SEQS ?= $(shell $(CONFIG_VALUE) server.max_num_seqs)
 SERVER_GPU_MEMORY_UTILIZATION ?= $(shell $(CONFIG_VALUE) server.gpu_memory_utilization)
 SERVER_TRUST_REMOTE_CODE ?= $(shell $(CONFIG_VALUE) server.trust_remote_code false)
 SERVER_GENERATION_CONFIG ?= $(shell $(CONFIG_VALUE) server.generation_config vllm)
@@ -153,6 +179,9 @@ SERVER_LORA_PATH ?=
 SERVER_ALLOW_RUNTIME_LORA_UPDATING ?= $(if $(filter true TRUE 1 yes YES on ON,$(SERVER_ENABLE_LORA)),true,false)
 SERVER_LOG ?= $(SERVER_STATE_ROOT)/arc3-inference-server.log
 SERVER_PID ?= $(SERVER_STATE_ROOT)/arc3-inference-server.pid
+SERVER_NODE_FILE ?= $(SERVER_STATE_ROOT)/server-host
+REMOTE_SERVER_HOST ?= $(shell cat "$(SERVER_NODE_FILE)" 2>/dev/null)
+REMOTE_SERVER_HEALTH_URL ?= http://$(REMOTE_SERVER_HOST):$(SERVER_PORT)/v1/models
 SERVER_REQUIRE_API_KEY ?= true
 SERVER_API_KEY ?=
 SERVER_API_KEY_FILE ?= $(SERVER_STATE_ROOT)/server-api-key
@@ -160,13 +189,23 @@ SERVER_VENV_PYTHON ?= $(REPO_ROOT)/.venv/bin/python
 SERVER_VENV_VLLM ?= $(dir $(SERVER_VENV_PYTHON))vllm
 SERVER_VENV_BIN ?= $(patsubst %/,%,$(dir $(SERVER_VENV_PYTHON)))
 SERVER_LOAD_LORA_URL ?= http://127.0.0.1:$(SERVER_PORT)/v1/load_lora_adapter
+VLLM_CONTAINER_ROOT ?= $(REPO_ROOT)/container
+VLLM_CONTAINER_STORE ?= $(REPO_ROOT)/.cache/vllm-container
+SERVER_APPTAINER ?= apptainer
+SERVER_APPTAINER_SIF ?= $(VLLM_CONTAINER_STORE)/vllm-openai.sif
+SERVER_APPTAINER_HF_HOME ?= $(VLLM_CONTAINER_STORE)/hf
+SERVER_APPTAINER_ATTENTION_BACKEND ?= FLASHINFER
+SERVER_APPTAINER_HF_OFFLINE ?= 1
+SERVER_MAX_IMAGES ?= $(shell $(CONFIG_VALUE) server.max_images 4)
+SERVER_MAX_VIDEOS ?= $(shell $(CONFIG_VALUE) server.max_videos 0)
 
-LOCAL_ANALYZER_BASE_URL ?= $(shell $(CONFIG_VALUE) analyzer.base_url $(SHARED_BASE_URL))
+LOCAL_ANALYZER_BASE_URL ?= $(shell $(CONFIG_VALUE) analyzer.base_url $(AUTO_ANALYZER_BASE_URL))
 LOCAL_ANALYZER_PROVIDER ?= $(shell $(CONFIG_VALUE) analyzer.provider $(SHARED_PROVIDER))
 LOCAL_ANALYZER_MODEL_ID ?= $(shell $(CONFIG_VALUE) analyzer.model_id $(SERVER_SERVED_MODEL_NAME))
 LOCAL_ANALYZER_CONTEXT_WINDOW ?= $(shell $(CONFIG_VALUE) analyzer.context_window $(SHARED_CONTEXT_WINDOW))
 LOCAL_ANALYZER_MAX_OUTPUT ?= $(shell $(CONFIG_VALUE) analyzer.max_output 0)
-LOCAL_ANALYZER_TIMEOUT ?= $(shell $(CONFIG_VALUE) analyzer.timeout 120)
+LOCAL_ANALYZER_CONTEXT_STEPS ?= $(shell $(CONFIG_VALUE) analyzer.context_steps 4)
+LOCAL_ANALYZER_TIMEOUT ?= $(shell $(CONFIG_VALUE) analyzer.timeout 240)
 LOCAL_ANALYZER_TEMPERATURE ?= $(shell $(CONFIG_VALUE) analyzer.temperature 0.6)
 LOCAL_ANALYZER_TOP_P ?= $(shell $(CONFIG_VALUE) analyzer.top_p 0.95)
 LOCAL_ANALYZER_TOP_K ?= $(shell $(CONFIG_VALUE) analyzer.top_k 20)
@@ -175,9 +214,10 @@ LOCAL_ANALYZER_TOOL_TIMEOUT ?= $(shell $(CONFIG_VALUE) analyzer.tool_timeout 30)
 LOCAL_ANALYZER_TOOL_OUTPUT_TOKENS ?= $(shell $(CONFIG_VALUE) analyzer.tool_output_tokens 1024)
 LOCAL_ANALYZER_YIELD_SECONDS ?= $(shell $(CONFIG_VALUE) analyzer.yield_seconds 60)
 LOCAL_ANALYZER_ENABLE_THINKING ?= $(shell $(CONFIG_VALUE) analyzer.thinking true)
+LOCAL_ANALYZER_MODEL_UPDATE_MODE ?= $(shell $(CONFIG_VALUE) analyzer.model_update_mode assistant)
 LOCAL_ANALYZER_SITE_URL ?= $(shell $(CONFIG_VALUE) analyzer.site_url)
 LOCAL_ANALYZER_APP_NAME ?= $(shell $(CONFIG_VALUE) analyzer.app_name ARC3 Agent Harness)
-ANALYZER_TIMEOUT ?= $(shell $(CONFIG_VALUE) analyzer.timeout 120)
+ANALYZER_TIMEOUT ?= $(shell $(CONFIG_VALUE) analyzer.timeout 240)
 ANALYZER_SAVE_REQUEST_LOGS ?= $(shell $(CONFIG_VALUE) analyzer.save_request_logs false)
 DEPLOYMENT_SLURM_START_LOCAL_SERVER ?= $(shell $(CONFIG_VALUE) deployment.slurm.start_local_server $(if $(filter vllm,$(LOCAL_ANALYZER_PROVIDER)),true,false))
 DEPLOYMENT_SLURM_LOCAL_SERVER_CONFIG ?= $(CONFIG_PATH)
@@ -222,6 +262,7 @@ export LOCAL_ANALYZER_PROVIDER
 export LOCAL_ANALYZER_MODEL_ID
 export LOCAL_ANALYZER_CONTEXT_WINDOW
 export LOCAL_ANALYZER_MAX_OUTPUT
+export LOCAL_ANALYZER_CONTEXT_STEPS
 export LOCAL_ANALYZER_TIMEOUT
 export LOCAL_ANALYZER_TEMPERATURE
 export LOCAL_ANALYZER_TOP_P
@@ -231,6 +272,7 @@ export LOCAL_ANALYZER_TOOL_TIMEOUT
 export LOCAL_ANALYZER_TOOL_OUTPUT_TOKENS
 export LOCAL_ANALYZER_YIELD_SECONDS
 export LOCAL_ANALYZER_ENABLE_THINKING
+export LOCAL_ANALYZER_MODEL_UPDATE_MODE
 export LOCAL_ANALYZER_SITE_URL
 export LOCAL_ANALYZER_APP_NAME
 export MULTIMODAL_CONTEXT
@@ -263,8 +305,11 @@ export OPENAI_API_KEY
 export LOCAL_ANALYZER_API_KEY
 export CHAT_API_KEY
 export SERVER_API_KEY
+TAAF_INLINE_SNAPSHOT_SOURCES ?= false
+
 export SERVER_PORT
 export ARC3_SERVER_PORT_EXPLICIT
+export TAAF_INLINE_SNAPSHOT_SOURCES
 export HF_HOME
 export HF_HUB_CACHE
 export TRANSFORMERS_CACHE
@@ -285,9 +330,15 @@ install:
 	@if [ ! -x "$(REPO_ROOT)/.venv/bin/python" ]; then \
 		$(UV) venv --python 3.12.12 $(REPO_ROOT)/.venv; \
 	fi
-	env -u VIRTUAL_ENV $(UV) sync --locked --all-extras --python $(REPO_ROOT)/.venv/bin/python
+	env -u VIRTUAL_ENV $(UV) sync --locked --python $(REPO_ROOT)/.venv/bin/python
 	@$(MAKE) install-local-sources
-	@echo "Project, test, and inference server dependencies are installed in $(REPO_ROOT)/.venv."
+	@echo "Project dependencies are installed in $(REPO_ROOT)/.venv."
+	@echo "Run 'make server' on a GPU node with Apptainer to start vLLM from the local container image."
+
+install-server: install
+	env -u VIRTUAL_ENV $(UV) sync --locked --extra server --python $(REPO_ROOT)/.venv/bin/python
+	@$(MAKE) install-local-sources
+	@echo "Inference server dependencies are installed in $(REPO_ROOT)/.venv."
 
 install-local-sources:
 	@if [ ! -x "$(REPO_ROOT)/.venv/bin/python" ]; then \
@@ -295,14 +346,88 @@ install-local-sources:
 		exit 1; \
 	fi
 	@if [ -d "$(REPO_ROOT)/../tufa-arc-agi-framework" ]; then \
-		$(UV) pip install --python "$(REPO_ROOT)/.venv/bin/python" \
+		if ! $(UV) pip install --offline --no-build-isolation --python "$(REPO_ROOT)/.venv/bin/python" \
 			--no-deps \
-			-e "$(REPO_ROOT)/../tufa-arc-agi-framework"; \
+			-e "$(REPO_ROOT)/../tufa-arc-agi-framework"; then \
+			echo "Offline editable install failed; retrying against the package index."; \
+			echo "This needs a host with internet; coe-hpc3 and the compute nodes have none."; \
+			$(UV) pip install --python "$(REPO_ROOT)/.venv/bin/python" \
+				--no-deps \
+				-e "$(REPO_ROOT)/../tufa-arc-agi-framework"; \
+		fi; \
 	fi
 
 prepare-ci:
 	$(UV) run --locked --extra dev ruff check .
 	LOCAL_ANALYZER_PROVIDER=vllm $(UV) run --locked --extra dev pytest
+
+serve:
+	@current_host="$$($(PYTHON) -c 'import socket; print(socket.gethostname().split(".")[0])' 2>/dev/null || hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)"; \
+	if [ "$$current_host" = "$(SERVE_LOGIN_HOST)" ]; then \
+		$(MAKE_BIN) serve-submit; \
+	else \
+		echo "Submitting model server from $(SERVE_LOGIN_HOST):$(SERVE_REMOTE_DIR)"; \
+		ssh "$(SERVE_LOGIN_HOST)" 'cd "$(SERVE_REMOTE_DIR)" && $(MAKE_BIN) serve-submit CONFIG_PATH="$(CONFIG_PATH)" SERVER_PORT="$(SERVER_PORT)" ARC3_SERVER_PORT_EXPLICIT="$(ARC3_SERVER_PORT_EXPLICIT)"'; \
+	fi
+
+serve-submit:
+	@if ! command -v sbatch >/dev/null 2>&1; then \
+		echo "sbatch was not found. Submit from $(SERVE_LOGIN_HOST), or run 'make serve' so Make can SSH there first." >&2; \
+		exit 1; \
+	fi
+	@mkdir -p "$(dir $(SERVE_SLURM_OUTPUT))"
+	@mkdir -p "$(dir $(SERVE_SLURM_ERROR))"
+	sbatch \
+		--job-name="$(SERVE_SLURM_JOB_NAME)" \
+		--partition="$(SERVE_SLURM_PARTITION)" \
+		--gres="$(SERVE_SLURM_GRES)" \
+		--cpus-per-task="$(SERVE_SLURM_CPUS_PER_TASK)" \
+		--mem="$(SERVE_SLURM_MEM)" \
+		--time="$(SERVE_SLURM_TIME)" \
+		--output="$(SERVE_SLURM_OUTPUT)" \
+		--error="$(SERVE_SLURM_ERROR)" \
+		$(SERVE_SLURM_EXTRA_FLAGS) \
+		--wrap='cd "$(SERVE_REMOTE_DIR)" && $(MAKE_BIN) serve-hold CONFIG_PATH="$(CONFIG_PATH)" SERVER_HOST="$(SERVE_SERVER_HOST)" SERVER_START_TIMEOUT="$(SERVE_SERVER_START_TIMEOUT)" SERVER_PORT="$(SERVER_PORT)" ARC3_SERVER_PORT_EXPLICIT="$(ARC3_SERVER_PORT_EXPLICIT)"'
+
+serve-hold:
+	@set -eu; \
+	if [ ! -f "Makefile" ]; then \
+		echo "serve-hold must run from ARC3-Inference." >&2; \
+		exit 1; \
+	fi; \
+	cleanup() { echo "[serve] stopping server"; $(MAKE_BIN) stop-server >/dev/null 2>&1 || true; }; \
+	trap cleanup TERM INT EXIT; \
+	echo "============================================================"; \
+	echo "ARC3 vLLM server"; \
+	echo "job_id=$${SLURM_JOB_ID:-local}"; \
+	echo "node=$$(hostname -f 2>/dev/null || hostname)"; \
+	echo "project=$(REPO_ROOT)"; \
+	echo "host=$(SERVER_HOST)"; \
+	echo "port=$(SERVER_PORT)"; \
+	echo "============================================================"; \
+	$(MAKE_BIN) server; \
+	node_host="$$(hostname -f 2>/dev/null || hostname)"; \
+	mkdir -p "$(SERVER_STATE_ROOT)"; \
+	printf '%s\n' "$$node_host" >"$(SERVER_NODE_FILE)"; \
+	echo "============================================================"; \
+	echo "Server is READY."; \
+	echo "  node       : $$node_host"; \
+	echo "  bind       : $(SERVER_HOST):$(SERVER_PORT)"; \
+	echo "  base_url   : http://$$node_host:$(SERVER_PORT)/v1"; \
+	echo "  api key    : $(SERVER_API_KEY_FILE)"; \
+	echo "Tunnel from your workstation/login shell with:"; \
+	echo "  ssh -N -L $(SERVER_PORT):$$node_host:$(SERVER_PORT) $(SERVE_LOGIN_HOST)"; \
+	echo "then use http://127.0.0.1:$(SERVER_PORT)/v1"; \
+	echo "Stop early with: scancel $${SLURM_JOB_ID:-<jobid>}"; \
+	echo "============================================================"; \
+	if [ -f "$(SERVER_PID)" ]; then \
+		srv_pid="$$(cat "$(SERVER_PID)")"; \
+		echo "[serve] server PID=$$srv_pid; holding allocation until it exits."; \
+		while kill -0 "$$srv_pid" >/dev/null 2>&1; do sleep 60; done; \
+	else \
+		echo "[serve] WARNING: pid file $(SERVER_PID) not found; holding allocation for walltime." >&2; \
+		sleep infinity; \
+	fi
 
 server:
 	@if [ "$(SERVER_BACKEND)" != "vllm" ]; then \
@@ -317,16 +442,18 @@ server:
 		echo "Served model name is required. Set server.served_model_name or shared.model_name in $(CONFIG_PATH)."; \
 		exit 1; \
 	fi
-	@if [ ! -x "$(SERVER_VENV_VLLM)" ]; then \
-		echo "Server dependencies are missing; running 'make install'."; \
-		$(MAKE) install; \
+	@if [ "$(SERVER_REQUIRE_SLURM)" = "true" ] && [ -z "$${SLURM_JOB_ID:-}" ]; then \
+		echo "make server starts vLLM inside an existing Slurm GPU allocation." >&2; \
+		echo "From this login shell, run 'make serve' instead; it submits the Slurm allocation through $(SERVE_LOGIN_HOST)." >&2; \
+		echo "Override with SERVER_REQUIRE_SLURM=false only if you already have GPU access outside Slurm." >&2; \
+		exit 1; \
 	fi
 	@server_api_key=""; \
 	if [ "$(SERVER_REQUIRE_API_KEY)" != "false" ] && [ "$(SERVER_REQUIRE_API_KEY)" != "FALSE" ] && [ "$(SERVER_REQUIRE_API_KEY)" != "0" ]; then \
-		server_api_key="$$(PYTHON="$(PYTHON)" "$(REPO_ROOT)/scripts/ensure_server_api_key.sh" "$(SERVER_API_KEY_FILE)")"; \
+		server_api_key="$$(PYTHON="$(PYTHON)" bash "$(REPO_ROOT)/scripts/ensure_server_api_key.sh" "$(SERVER_API_KEY_FILE)")"; \
 		echo "Server API key file: $(SERVER_API_KEY_FILE)"; \
 	fi; \
-	server_http_status="$$("$(REPO_ROOT)/scripts/server_curl.sh" "$(SERVER_API_KEY_FILE)" -sS -o /dev/null -w "%{http_code}" "$(SERVER_HEALTH_URL)" 2>/dev/null || true)"; \
+	server_http_status="$$(bash "$(REPO_ROOT)/scripts/server_curl.sh" "$(SERVER_API_KEY_FILE)" -sS -o /dev/null -w "%{http_code}" "$(SERVER_HEALTH_URL)" 2>/dev/null || true)"; \
 	if [ "$$server_http_status" = "200" ]; then server_ready=1; else server_ready=0; fi; \
 	if [ "$$server_http_status" = "401" ] || [ "$$server_http_status" = "403" ]; then \
 		echo "Inference server at $(SERVER_HEALTH_URL) rejected this run's API key."; \
@@ -355,6 +482,10 @@ server:
 				--tensor-parallel-size "$(SERVER_TENSOR_PARALLEL_SIZE)" \
 				--max-model-len "$(SERVER_MAX_MODEL_LEN)" \
 				$(if $(SERVER_DTYPE),--dtype "$(SERVER_DTYPE)") \
+				$(if $(SERVER_QUANTIZATION),--quantization "$(SERVER_QUANTIZATION)") \
+				$(if $(SERVER_KV_CACHE_DTYPE),--kv-cache-dtype "$(SERVER_KV_CACHE_DTYPE)") \
+				$(if $(SERVER_ATTENTION_BACKEND),--attention-backend "$(SERVER_ATTENTION_BACKEND)") \
+				$(if $(SERVER_MAX_NUM_SEQS),--max-num-seqs "$(SERVER_MAX_NUM_SEQS)") \
 				$(if $(SERVER_GPU_MEMORY_UTILIZATION),--gpu-memory-utilization "$(SERVER_GPU_MEMORY_UTILIZATION)") \
 				$(if $(filter true TRUE 1 yes YES on ON,$(SERVER_TRUST_REMOTE_CODE)),--trust-remote-code) \
 				$(if $(SERVER_GENERATION_CONFIG),--generation-config "$(SERVER_GENERATION_CONFIG)") \
@@ -368,6 +499,10 @@ server:
 				$(if $(SERVER_SPECULATIVE_CONFIG),--speculative-config '$(SERVER_SPECULATIVE_CONFIG)') \
 				$(if $(SERVER_HF_OVERRIDES),--hf-overrides '$(SERVER_HF_OVERRIDES)') \
 			>"$(SERVER_LOG)" 2>&1 & echo $$! >"$(SERVER_PID)"; \
+		else \
+			echo "Unsupported SERVER_RUNTIME='$(SERVER_RUNTIME)'. Use 'apptainer' or 'venv'." >&2; \
+			exit 1; \
+		fi; \
 		echo "PID: $$(cat "$(SERVER_PID)")"; \
 		echo "First startup can take several minutes while vLLM loads weights and builds compile/cache artifacts."; \
 			echo "Follow startup logs with: tail -f $(SERVER_LOG)"; \
@@ -383,12 +518,12 @@ server:
 			fi; \
 			exit 1; \
 		fi; \
-		if "$(REPO_ROOT)/scripts/server_curl.sh" "$(SERVER_API_KEY_FILE)" -fsS "$(SERVER_HEALTH_URL)" >/dev/null 2>&1; then server_ready=1; else server_ready=0; fi; \
+		if bash "$(REPO_ROOT)/scripts/server_curl.sh" "$(SERVER_API_KEY_FILE)" -fsS "$(SERVER_HEALTH_URL)" >/dev/null 2>&1; then server_ready=1; else server_ready=0; fi; \
 		if [ "$$server_ready" = "1" ]; then \
 			echo "Inference server is ready at $(SERVER_HEALTH_URL)"; \
 			if [ "$(filter true TRUE 1 yes YES on ON,$(SERVER_ENABLE_LORA))" != "" ] && [ -n "$(SERVER_LORA_PATH)" ]; then \
 				echo "Loading initial LoRA adapter $(SERVER_LORA_ALIAS) from $(SERVER_LORA_PATH)"; \
-				"$(REPO_ROOT)/scripts/server_curl.sh" "$(SERVER_API_KEY_FILE)" -fsS -X POST "$(SERVER_LOAD_LORA_URL)" \
+				bash "$(REPO_ROOT)/scripts/server_curl.sh" "$(SERVER_API_KEY_FILE)" -fsS -X POST "$(SERVER_LOAD_LORA_URL)" \
 					-H "Content-Type: application/json" \
 					--data "{\"lora_name\":\"$(SERVER_LORA_ALIAS)\",\"lora_path\":\"$(SERVER_LORA_PATH)\",\"load_inplace\":true}" >/dev/null; \
 			fi; \
@@ -424,10 +559,37 @@ stop-server:
 	fi
 
 check-server:
-	@if "$(REPO_ROOT)/scripts/server_curl.sh" "$(SERVER_API_KEY_FILE)" -fsS "$(SERVER_HEALTH_URL)" >/dev/null 2>&1; then server_ready=1; else server_ready=0; fi; \
+	@if bash "$(REPO_ROOT)/scripts/server_curl.sh" "$(SERVER_API_KEY_FILE)" -fsS "$(SERVER_HEALTH_URL)" >/dev/null 2>&1; then server_ready=1; else server_ready=0; fi; \
 	if [ "$$server_ready" != "1" ]; then \
 		echo "Inference server is not reachable at $(SERVER_HEALTH_URL)"; \
 		echo "Run 'make server' and inspect $(SERVER_LOG) if it fails."; \
+		exit 1; \
+	fi
+
+server-host:
+	@if [ ! -s "$(SERVER_NODE_FILE)" ]; then \
+		echo "No server host file at $(SERVER_NODE_FILE). Start the server with 'make serve' first."; \
+		exit 1; \
+	fi
+	@cat "$(SERVER_NODE_FILE)"
+
+server-tunnel-command:
+	@if [ ! -s "$(SERVER_NODE_FILE)" ]; then \
+		echo "No server host file at $(SERVER_NODE_FILE). Start the server with 'make serve' first."; \
+		exit 1; \
+	fi; \
+	server_host="$$(cat "$(SERVER_NODE_FILE)")"; \
+	echo "ssh -N -L $(SERVER_PORT):$$server_host:$(SERVER_PORT) $(SERVE_LOGIN_HOST)"
+
+check-remote-server:
+	@if [ -z "$(strip $(REMOTE_SERVER_HOST))" ]; then \
+		echo "No server host file at $(SERVER_NODE_FILE). Start the server with 'make serve' first."; \
+		exit 1; \
+	fi
+	@if bash "$(REPO_ROOT)/scripts/server_curl.sh" "$(SERVER_API_KEY_FILE)" -fsS "$(REMOTE_SERVER_HEALTH_URL)" >/dev/null 2>&1; then server_ready=1; else server_ready=0; fi; \
+	if [ "$$server_ready" != "1" ]; then \
+		echo "Inference server is not reachable at $(REMOTE_SERVER_HEALTH_URL)"; \
+		echo "If compute nodes are not directly reachable from this shell, run: make server-tunnel-command"; \
 		exit 1; \
 	fi
 
@@ -437,10 +599,19 @@ interactive: DEPLOYMENT_TARGET = inline
 interactive: DEPLOYMENT_WAIT = true
 interactive: _taaf-run
 
-sbatch: CONFIG_PATH = $(SBATCH_EFFECTIVE_CONFIG_PATH)
-sbatch: DEPLOYMENT_TARGET = slurm
-sbatch: install-local-sources
-sbatch: _taaf-run
+sbatch:
+	@current_host="$$($(PYTHON) -c 'import socket; print(socket.gethostname().split(".")[0])' 2>/dev/null || hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)"; \
+	if [ "$$current_host" = "$(SBATCH_LOGIN_HOST)" ]; then \
+		$(MAKE_BIN) sbatch-submit; \
+	else \
+		echo "Submitting game run from $(SBATCH_LOGIN_HOST):$(SBATCH_REMOTE_DIR)"; \
+		ssh "$(SBATCH_LOGIN_HOST)" 'cd "$(SBATCH_REMOTE_DIR)" && $(MAKE_BIN) sbatch-submit $(MAKEOVERRIDES)'; \
+	fi
+
+sbatch-submit: CONFIG_PATH = $(SBATCH_EFFECTIVE_CONFIG_PATH)
+sbatch-submit: DEPLOYMENT_TARGET = slurm
+sbatch-submit: install-local-sources
+sbatch-submit: _taaf-run
 
 kaggle-duck: DEPLOYMENT_TARGET = kaggle
 kaggle-duck: KAGGLE_DUCK_PUBLIC_HARNESS = true

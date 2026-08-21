@@ -492,6 +492,9 @@ def _snapshot_one_repo(repo_root: Path, dest: Path) -> Path:
         target = dest / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(pkg_dir, target, ignore=ignore, dirs_exist_ok=True)
+    cache_dir = repo_root / ".cache"
+    if cache_dir.is_dir():
+        (dest / ".cache").symlink_to(cache_dir)
     return dest
 
 

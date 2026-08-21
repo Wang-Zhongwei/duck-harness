@@ -376,6 +376,7 @@ def _make_deployment_target(
         "extra_sbatch_flags": extra_sbatch_flags,
         "extra_source_repos": [_project_root, *source_repos],
         "main_project": _project_root.name,
+        "launcher_venv": _project_root / ".venv",
     }
     if (
         resolved_max_runtime_s is not None
@@ -565,15 +566,11 @@ def _wave_count(*, game_count: int, n_passes: int, concurrent_jobs: int) -> int:
 
 
 def _concurrency_multiplier(args: argparse.Namespace) -> int:
-    if str(getattr(args, "deployment_target", "")).strip().lower() != "slurm":
-        return 1
-    if not bool(getattr(args, "slurm_start_local_server", False)):
-        return 1
-    return max(1, int(getattr(args, "slurm_gpu_count", 1) or 1))
+    return 1
 
 
 def _effective_concurrent_jobs(args: argparse.Namespace) -> int:
-    return int(args.concurrent_jobs) * _concurrency_multiplier(args)
+    return int(args.concurrent_jobs)
 
 
 def _max_runtime_minutes_per_game(
@@ -719,8 +716,10 @@ def _resolve_config_path(raw_path: str) -> Path:
 
 
 def _run_scoped_server_port(*, run_dir: Path, group_count: int) -> int:
+    # Stay below the kernel ephemeral range (32768-60999): a port in that
+    # range can be taken by any transient outbound socket on the worker node.
     floor = 24000
-    span = 20000
+    span = 8000
     width = max(1, int(group_count))
     usable = max(1, span - width)
     digest = hashlib.blake2b(
@@ -804,7 +803,6 @@ def _write_run_config(
     slurm_starts_local_server = str(
         args.deployment_target
     ).strip().lower() == "slurm" and bool(args.slurm_start_local_server)
-    concurrency_multiplier = _concurrency_multiplier(args)
     effective_concurrent_jobs = _effective_concurrent_jobs(args)
     payload = {
         "version": 2,
@@ -834,7 +832,7 @@ def _write_run_config(
             n_passes=int(args.n_passes),
         ),
         "concurrent_jobs": int(args.concurrent_jobs),
-        "concurrent_jobs_scope": "per_gpu" if concurrency_multiplier > 1 else "total",
+        "concurrent_jobs_scope": "total",
         "effective_concurrent_jobs": effective_concurrent_jobs,
         "analyzer_timeout_seconds": getattr(args, "analyzer_timeout", 120),
         "wave_count": wave_count,
@@ -1127,6 +1125,7 @@ def _run_split_slurm_local_servers(
 
 
 def _run(args: argparse.Namespace) -> None:
+
     game_ids = _resolve_game_ids(args)
     with contextlib.ExitStack() as stack:
         game_ids, arcade_spec = _enter_competition_arcade(
@@ -1190,13 +1189,7 @@ def _run(args: argparse.Namespace) -> None:
         )
         print(f"Run directory: {run_dir.absolute()}")
         print(f"Games: {', '.join(game_ids)}")
-        if solver.concurrency != int(solver_args.concurrent_jobs):
-            concurrency_text = (
-                f"{int(solver_args.concurrent_jobs)} per GPU/server "
-                f"({solver.concurrency} total)"
-            )
-        else:
-            concurrency_text = str(solver.concurrency)
+        concurrency_text = str(solver.concurrency)
         print(
             f"Passes: {benchmark.n_passes}; concurrency: {concurrency_text}; waves: {wave_count}"
         )
@@ -1417,8 +1410,12 @@ def main() -> None:
     if args.competition_clone_runs < 0:
         log.error("--competition-clone-runs must be non-negative.")
         sys.exit(1)
-    if args.slurm_gpu_count <= 0:
-        log.error("--slurm-gpu-count must be positive.")
+    if args.slurm_gpu == "CPU":
+        if args.slurm_gpu_count != 0:
+            log.error("--slurm-gpu-count must be 0 when --slurm-gpu=CPU.")
+            sys.exit(1)
+    elif args.slurm_gpu_count <= 0:
+        log.error("--slurm-gpu-count must be positive for GPU Slurm jobs.")
         sys.exit(1)
     if not args.list_games and not args.model:
         log.error("--model is required unless --list-games is set.")

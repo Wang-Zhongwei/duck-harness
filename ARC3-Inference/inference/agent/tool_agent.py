@@ -20,6 +20,7 @@ from inference.agent.prompts import (
     PYTHON_ADDENDUM,
     STRUCTURED_RUNTIME_STATE_ADDENDUM,
     MULTIMODAL_CONTEXT_ADDENDUM,
+    MODEL_UPDATE_TOOL_ADDENDUM,
     TOOL_CALL_FORMAT_GUIDANCE,
     VISUAL_GAME_ADDENDUM,
 )
@@ -136,6 +137,19 @@ def _get_env_float(name: str, default: float) -> float:
 
 _LOCAL_ANALYZER_MAX_OUTPUT = _get_env_int("LOCAL_ANALYZER_MAX_OUTPUT", 0)
 _LOCAL_ANALYZER_CONTEXT_WINDOW = _get_env_int("LOCAL_ANALYZER_CONTEXT_WINDOW", 32768)
+# Rolling context window measured in whole steps rather than tokens. Each step
+# carries two board images, so a request holds at most 2 * this many images and
+# the server's --limit-mm-per-prompt must allow that. 0 restores the previous
+# token-only trimming with images stripped from history.
+_LOCAL_ANALYZER_CONTEXT_STEPS = _get_env_int("LOCAL_ANALYZER_CONTEXT_STEPS", 4)
+# Vision tokens one board image costs the model: (grid_px * upscale / 16 / 2)^2,
+# i.e. (2 * MULTIMODAL_UPSCALE)^2 for a 64x64 grid -> 1024 at the default
+# upscale of 16. Used for context accounting only; see _replace_image_parts.
+_LOCAL_ANALYZER_IMAGE_TOKEN_COST = _get_env_int("LOCAL_ANALYZER_IMAGE_TOKEN_COST", 1024)
+# Stands in for a board image once its step is no longer the current one.
+# Doubles as the step-boundary marker in persisted history, so eviction still
+# lands on whole steps after the images are gone.
+_STEP_IMAGE_PLACEHOLDER = "[board image from an earlier step omitted; its text description is above]"
 _LOCAL_ANALYZER_TIMEOUT = _get_env_float("LOCAL_ANALYZER_TIMEOUT", 0.0)
 _LOCAL_ANALYZER_TOOL_STEPS = _get_env_int("LOCAL_ANALYZER_TOOL_STEPS", 12)
 _LOCAL_ANALYZER_TOOL_TIMEOUT = _get_env_int("LOCAL_ANALYZER_TOOL_TIMEOUT", 30)
@@ -146,6 +160,9 @@ _LOCAL_ANALYZER_TEMPERATURE = _get_env_float("LOCAL_ANALYZER_TEMPERATURE", 0.6)
 _LOCAL_ANALYZER_TOP_P = _get_env_float("LOCAL_ANALYZER_TOP_P", 0.95)
 _LOCAL_ANALYZER_TOP_K = _get_env_int("LOCAL_ANALYZER_TOP_K", 20)
 _LOCAL_ANALYZER_SEED = _get_env_int("LOCAL_ANALYZER_SEED", -1)
+_LOCAL_ANALYZER_MODEL_UPDATE_MODE = os.environ.get(
+    "LOCAL_ANALYZER_MODEL_UPDATE_MODE", "assistant"
+).strip().lower()
 _REQUEST_SAFETY_MARGIN_TOKENS = 512
 _CONTEXT_OVERFLOW_RETRY_TRIM_TOKENS = 512
 _PERSISTENT_HISTORY_ASSISTANT_TURNS = 30
@@ -154,13 +171,17 @@ _RESPONSE_META_MAX_CHARS = 4000
 _PYTHON_TOOL_DESCRIPTION = (
     "Run one ephemeral Python snippet against preloaded ASCII game state. Available globals: "
     "`current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, "
-    "`valid_actions`, `last_action_result`, "
-    "and `action(actions)` for executing one or more real environment actions. "
-    "`current_frame` and each `history[*].frame` expose only `.ascii`, `.segmentation`, `.step`, and `.level`; "
+    "`valid_actions`, `last_action_result`, `frame_diff(before, after)`, "
+    "`action(actions)` for executing one or more real environment actions, "
+    "and `update_memory(...)` for saving persistent memory fields. "
+    "When the effect of an action (compare `previous_frame` to `current_frame` via `last_transition.diff`) "
+    "contradicts the models you are carrying, call `update_memory(...)` in the same snippet. "
+    "`current_frame` and each `history[*].frame` expose only `.ascii`, `.segmentation`, `.step`, `.level`, and `.shape`; "
     "`history[-1].frame` is the current post-action frame, not the previous frame. "
-    "For before/after diffs, compare `previous_frame` to `current_frame` or use `last_transition.before_frame` and `.after_frame`. "
+    "For before/after diffs, use `last_transition.diff` or `frame_diff(previous_frame, current_frame)`; it preserves every changed cell. "
     "For MOUSE, pass `row` and `col` integer fields; legacy x/y fields are rejected. "
     "The raw numeric grid is not available. Use `.segmentation` as the primary view; use `.ascii` only to read a small, specific region. "
+    "Query objects with e.g. `segmentation.find(color='B', area=24).one()`; nodes carry `area` (int, number of cells excluding children), `bbox`, `centroid`, `h`/`w`, and a position-invariant `id` for cross-frame tracking (identical-looking objects share an id). "
     "Use `print(...)` for compact output or assign final data to `result`."
 )
 
@@ -359,7 +380,22 @@ def _format_model_response_meta(
     return "\n".join(lines)
 
 
-def _build_system_prompt(*, tool_output_tokens: int) -> str:
+def _normalize_model_update_mode(value: str | None) -> str:
+    mode = str(value or "assistant").strip().lower()
+    if mode not in {"assistant", "tool"}:
+        raise ValueError(
+            "model_update_mode must be 'assistant' or 'tool', "
+            f"got {value!r}."
+        )
+    return mode
+
+
+def _build_system_prompt(
+    *,
+    tool_output_tokens: int,
+    model_update_mode: str = "assistant",
+) -> str:
+    model_update_mode = _normalize_model_update_mode(model_update_mode)
     prompt = "You are a coding agent solving a grid-based puzzle game."
     prompt += GAME_OVERVIEW_ADDENDUM
     prompt += STRUCTURED_RUNTIME_STATE_ADDENDUM
@@ -367,7 +403,13 @@ def _build_system_prompt(*, tool_output_tokens: int) -> str:
         prompt += MULTIMODAL_CONTEXT_ADDENDUM
     prompt += VISUAL_GAME_ADDENDUM
     prompt += PYTHON_ADDENDUM
-    prompt += COMPACT_TOOL_SESSION_ADDENDUM.format(tool_output_tokens=tool_output_tokens)
+    tool_inventory = "You have exactly one tool: `python`."
+    prompt += COMPACT_TOOL_SESSION_ADDENDUM.format(
+        tool_output_tokens=tool_output_tokens,
+        tool_inventory=tool_inventory,
+    )
+    if model_update_mode == "tool":
+        prompt += MODEL_UPDATE_TOOL_ADDENDUM
     return prompt
 
 
@@ -471,6 +513,33 @@ def _format_action_span(start_action_num: int | None, end_action_num: int | None
     return f"{start_action_num}-{end_action_num}"
 
 
+def _replace_image_parts(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """Drop ``image_url`` payloads before token estimation, returning the count.
+
+    ``_estimate_tokens`` weighs the JSON-serialized request, so an inlined
+    base64 data URL is counted at its *character* length. A 1024x1024 board
+    renders to ~7.3k base64 chars -> ~2.4k estimated tokens, while the model
+    actually spends 1024 vision tokens on it. Left uncorrected, the estimate
+    overshoots by ~1.4k tokens per image, which at two images per step made
+    the trimmer evict a step that comfortably fit.
+    """
+    stripped: list[dict[str, Any]] = []
+    image_count = 0
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            stripped.append(message)
+            continue
+        new_content: list[Any] = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                image_count += 1
+                continue
+            new_content.append(part)
+        stripped.append({**message, "content": new_content})
+    return stripped, image_count
+
+
 def _estimate_tokens(value: Any) -> int:
     try:
         rendered = json.dumps(value, ensure_ascii=True, sort_keys=True, default=str)
@@ -544,6 +613,27 @@ def _render_transcript_section(label: str, content: str) -> str:
     if not rendered_content:
         return ""
     return f"[{label}]\n{rendered_content}\n\n"
+
+
+_TRANSCRIPT_IMAGE_MARKER = "[board image here]"
+
+
+def _render_user_message_text(message: dict[str, Any]) -> str:
+    """Transcript text for a user message, marking where board images sit.
+
+    Derived from the built message rather than the prompt halves so the
+    transcript always reflects what the request actually carried.
+    """
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for part in content or []:
+        if isinstance(part, dict) and part.get("type") == "image_url":
+            parts.append(_TRANSCRIPT_IMAGE_MARKER)
+        elif isinstance(part, dict):
+            parts.append(str(part.get("text", "")))
+    return "\n".join(part for part in parts if part)
 
 
 def _json_like_payload(value: Any) -> Any | None:
@@ -925,6 +1015,7 @@ class ToolAgent:
         api_key: str | None = None,
         base_url: str | None = None,
         provider: str | None = None,
+        model_update_mode: str | None = None,
     ) -> None:
         resolved_model = _resolve_analyzer_model(model)
         if base_url is not None or provider is not None:
@@ -950,14 +1041,22 @@ class ToolAgent:
         self._tool_output_tokens = max(64, _LOCAL_ANALYZER_TOOL_OUTPUT_TOKENS)
         self._tool_output_chars = max(256, self._tool_output_tokens * 4)
         self._save_request_logs = bool(save_request_logs)
+        self._model_update_mode = _normalize_model_update_mode(
+            _LOCAL_ANALYZER_MODEL_UPDATE_MODE
+            if model_update_mode is None
+            else model_update_mode
+        )
         self._system_prompt = _build_system_prompt(
             tool_output_tokens=self._tool_output_tokens,
+            model_update_mode=self._model_update_mode,
         )
         self._request_safety_margin_tokens = _REQUEST_SAFETY_MARGIN_TOKENS
         self._context_budget_tokens = max(
             1024,
             _LOCAL_ANALYZER_CONTEXT_WINDOW - self._reply_reserve_tokens - self._request_safety_margin_tokens,
         )
+        self._context_steps = max(0, _LOCAL_ANALYZER_CONTEXT_STEPS)
+        self._grid_images_enabled = current_grid_image_enabled()
         self._history_messages: list[dict[str, Any]] = []
         self._session_runtime_dir: Path | None = None
         self._session_total_tokens = 0
@@ -1115,6 +1214,8 @@ class ToolAgent:
         return " ".join(pieces)
 
     def _update_summarized_knowledge_from_assistant(self, content: str) -> None:
+        if self._model_update_mode != "assistant":
+            return
         note = _extract_scientist_note(content)
         if not note:
             return
@@ -1126,16 +1227,18 @@ class ToolAgent:
         summary = self._last_step_summary
         if not summary:
             return
+        level_fields = (
+            "world_model",
+            "goal_model",
+            "action_model",
+            "recent_findings",
+            "open_questions",
+            "current_plan",
+        )
         if summary.get("level_transition") or summary.get("run_complete") or summary.get("game_over"):
-            for key in (
-                "world_model",
-                "goal_model",
-                "action_model",
-                "recent_findings",
-                "open_questions",
-                "current_plan",
-            ):
+            for key in level_fields:
                 self._summarized_knowledge[key] = ""
+
 
     def _summarized_knowledge_lines(self) -> list[str]:
         entries = [
@@ -1149,25 +1252,84 @@ class ToolAgent:
         ]
         lines = [f"- {label}: {value}" for label, value in entries if value]
         if not lines:
-            return []
+            return [""]
         return [
-            "Working world model carried from earlier turns:",
             *lines,
             "- Revise any item above immediately if `current_frame` or `history` contradicts it.",
         ]
 
-    def _build_user_message(self, user_prompt: str, current_frame: Frame | None) -> dict[str, Any]:
-        image_part = current_grid_image_part(current_frame)
-        if image_part is None:
-            return {"role": "user", "content": user_prompt}
+    def _step_boundary_frames(
+        self,
+        current_frame: Frame | None,
+        history_entries: list[HistoryEntry],
+        previous_step_summary: dict[str, Any] | None,
+    ) -> tuple[Frame | None, Frame | None]:
+        """``(before, after)`` boards around the previous step's actions.
 
-        return {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": f"{user_prompt}\n\nCurrent grid image:"},
-                image_part,
-            ],
-        }
+        ``history_entries[-1].frame`` is the post-action board -- the same one
+        as ``current_frame`` -- so the board before a batch of ``n`` actions is
+        ``history_entries[-(n + 1)].frame``. Mirrors how the python runtime
+        derives ``previous_frame`` from ``last_transition.before_frame``.
+        """
+        executed: list[str] = []
+        count = 0
+        if isinstance(previous_step_summary, dict):
+            raw_actions = previous_step_summary.get("executed_actions")
+            if isinstance(raw_actions, list):
+                executed = [str(name).strip() for name in raw_actions if str(name).strip()]
+            try:
+                count = int(previous_step_summary.get("executed_count") or 0)
+            except (TypeError, ValueError):
+                count = 0
+        count = max(count, len(executed), 1)
+        index = len(history_entries) - 1 - count
+        before_frame = history_entries[index].frame if 0 <= index < len(history_entries) else None
+        return before_frame, current_frame
+
+    def _build_user_message(
+        self,
+        intro: str,
+        rest: str,
+        *,
+        before_frame: Frame | None = None,
+        after_frame: Frame | None = None,
+    ) -> dict[str, Any]:
+        """Build the step's user message with the boards inside the narrative.
+
+        The before/after board images sit between ``intro`` (the executed-
+        sequence narrative, which already names the actions) and ``rest``
+        (the sequence outcome and the remaining sections), so each board
+        appears next to the text it illustrates instead of trailing the
+        whole prompt. Text-only requests just join the halves.
+
+        Both images stay in the message for every request of the step, so the
+        model can re-read the boards through its whole tool loop instead of
+        relying on whatever it transcribed into text on the first request.
+        They are stripped on the way into history (see
+        ``_strip_images_from_message``), so a request carries two boards no
+        matter how wide the window is. Because only step-opening messages
+        carry images or their placeholder, ``_is_history_turn_start`` can
+        recognize step boundaries structurally.
+        """
+        after_part = current_grid_image_part(after_frame)
+        if after_part is None:
+            return {"role": "user", "content": f"{intro}\n{rest}"}
+
+        before_part = current_grid_image_part(before_frame)
+        if before_part is None:
+            content: list[dict[str, Any]] = [
+                {"type": "text", "text": f"{intro}\n- Current board (no prior action to compare against):"},
+                after_part,
+            ]
+        else:
+            content = [
+                {"type": "text", "text": f"{intro}\n- Board before this sequence:"},
+                before_part,
+                {"type": "text", "text": "- Board after this sequence (the current board):"},
+                after_part,
+            ]
+        content.append({"type": "text", "text": rest})
+        return {"role": "user", "content": content}
 
 
     def _build_user_prompt(
@@ -1178,7 +1340,15 @@ class ToolAgent:
         current_frame: Frame | None = None,
         history_entries: list[HistoryEntry] | None = None,
         previous_step_summary: dict[str, Any] | None = None,
-    ) -> str:
+    ) -> tuple[str, str]:
+        """Return the ``(intro, rest)`` halves of the step's user prompt.
+
+        ``intro`` is the executed-sequence narrative and ends where the
+        previous step's boards belong; ``rest`` resumes with the sequence
+        outcome and the remaining sections. ``_build_user_message`` places
+        the before/after images between the halves; text-only requests join
+        them with a newline.
+        """
         history_entries = history_entries or []
         current_step = max(current_frame.step if current_frame is not None else 0, max(0, action_num)) + 1
         current_level = current_frame.level if current_frame is not None else 1
@@ -1194,7 +1364,8 @@ class ToolAgent:
             [current_level, *[entry.frame.level for entry in history_entries if entry.frame is not None]],
             default=current_level,
         )
-        lines: list[str] = []
+        intro_lines: list[str] = ["Previous sequence:"]
+        outcome_lines: list[str] = []
         if previous_step_summary:
             count = previous_step_summary.get("executed_count")
             try:
@@ -1202,74 +1373,126 @@ class ToolAgent:
             except (TypeError, ValueError):
                 normalized_count = None
             action_label = "action" if normalized_count == 1 else "actions"
-            lines.append(f"The code executed {normalized_count or 0} {action_label} in the previous sequence.")
             executed_actions = previous_step_summary.get("executed_actions")
             rendered_actions: list[str] = []
             if isinstance(executed_actions, list):
                 rendered_actions = [str(name).strip() for name in executed_actions if str(name).strip()]
             if rendered_actions:
-                action_prefix = "Executed actions (first 10):" if len(rendered_actions) > 10 else "Executed actions:"
-                lines.append(f"{action_prefix} {', '.join(rendered_actions[:10])}.")
+                shown_suffix = " (first 10 shown)" if len(rendered_actions) > 10 else ""
+                intro_lines.append(
+                    f"- Your code executed {normalized_count or 0} {action_label}{shown_suffix}: "
+                    f"{', '.join(rendered_actions[:10])}."
+                )
             else:
-                lines.append("Executed actions: none.")
+                intro_lines.append(
+                    f"- Your code executed {normalized_count or 0} {action_label} (names not captured)."
+                )
             if previous_step_summary.get("run_complete"):
-                lines.append("You have completed the run!")
+                outcome_lines.append("- You have completed the run!")
             elif previous_step_summary.get("level_transition"):
-                lines.append("You have progressed to a new level!")
+                outcome_lines.append("- You have progressed to a new level!")
             else:
-                lines.append("You are still on the same level.")
+                outcome_lines.append("- You are still on the same level.")
             if previous_step_summary.get("game_over"):
-                lines.append("The game is over.")
+                outcome_lines.append("- The game is over.")
         elif (current_frame is not None and current_frame.step > 0) or action_num > 0:
-            lines.append("No previous action sequence was captured.")
+            intro_lines.append("- No previous action sequence was captured.")
         else:
-            lines.append("No previous sequence has been executed yet.")
-        state_line = f"Current state: step {current_step}, level {current_level}"
+            intro_lines.append("- No previous sequence has been executed yet.")
+
+        state_line = f"- Step {current_step}, level {current_level}"
         if observed_max_level > current_level:
-            state_line += f" out of observed max level {observed_max_level} so far"
+            state_line += f" (observed max level {observed_max_level} so far)"
         state_line += "."
-        lines.extend(
-            [
-                state_line,
-                f"Valid actions right now: {_format_valid_action_line(valid_actions)}.",
-                "Only tool: `python`. It receives `current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, `valid_actions`, `last_action_result`, and `action(actions)`.",
-                "Only letter-coded board views and lightweight metadata are exposed; raw numeric color IDs are not available.",
-                "Keep tool output compact: use `current_frame.segmentation` as the primary view, and `current_frame.ascii` only for a small specific region; never print full boards.",
-                "For the most recent change, compare `previous_frame` to `current_frame`, or `last_transition.before_frame` to `last_transition.after_frame`; `history[-1].frame` is the current frame, not the previous one.",
-                "Use Python to inspect the evidence, refine that world model from the newest history, and search or score candidate actions or short sequences against the current goal as you currently understand it.",
-                "Maintain a compact working world model of what the current level seems to contain, what actions appear to do, what the goal seems to be, what is still uncertain, and what plan currently looks best.",
-                "Below you are provided with the current world model from the previous turn. The default behavior is to copy it and add or remove things based on the evidence that you gathered. BEFORE EXECUTING NEW ACTIONS YOU MUST ALWAYS GIVE THE REVISED VERSION OF THE WORLD MODEL.",
-            ]
+        state_section = [
+            "Current state:",
+            state_line,
+            f"- Valid actions right now: {_format_valid_action_line(valid_actions)}.",
+        ]
+
+        memory_section = ["Persistent memory (carried from your previous turns):"]
+        memory_section.extend(self._summarized_knowledge_lines())
+        if self._model_update_mode == "assistant":
+            memory_section.append(
+                "- If you include assistant text before a tool call, keep it short and use it to update persistent memory. Helpful optional prefixes are `World model:`, `Goal model:`, `Action model:`, `Recent findings:`, `Open questions:`, `Plan:`, and `Cross-level notes:`."
+            )
+        else:
+            memory_section.append(
+                "- Call `update_memory(...)` inside your `python` code -- in the same snippet "
+                "where the evidence appears -- when recent history contradicts the current "
+                "models, `last_action` reveals new evidence, or you have a high-level insight, "
+                "question, or plan worth preserving. Do not record trivial details. "
+                "A useful check: would these models have predicted the observed effect of "
+                "`last_action`? Compare `previous_frame` to `current_frame` via "
+                "`last_transition.diff`; if not, revise the wrong field."
+            )
+        memory_section.append(
+            "- Maintain compact working models of what the current level seems to contain, what actions appear to do, what the goal seems to be, what is still uncertain, and what plan currently looks best."
         )
-        lines.append(
-            "You may call `action(actions)` more than once in one Python snippet if your search or control loop needs it, "
+        if previous_step_summary and previous_step_summary.get("level_transition"):
+            if self._model_update_mode == "tool":
+                memory_section.append(
+                    "- REQUIRED before executing any environment action: in your first `python` call, call `update_memory(cross_level_notes=...)` with notes that MERGE transferable entities, mechanics, action rules, goal structure, and useful uncertainties from prior levels into the existing cross-level notes above. Cross-level notes are cumulative across ALL levels of the run: keep earlier levels' still-useful insights and add new ones; never overwrite or drop them. Omit level-specific coordinates and layout details."
+                )
+            else:
+                memory_section.append(
+                    "- REQUIRED before executing any new action: write a `Cross-level notes:` section that MERGES transferable entities, mechanics, action rules, goal structure, and useful uncertainties from prior levels into the existing cross-level notes above. Cross-level notes are cumulative across ALL levels of the run: keep earlier levels' still-useful insights and add new ones; never overwrite or drop them. Omit level-specific coordinates and layout details."
+                )
+
+        tool_line = (
+            "- Only tool: `python`. It receives `current_frame`, `previous_frame`, `history`, "
+            "`transitions`, `last_transition`, `valid_actions`, `last_action_result`, "
+            "`frame_diff(before, after)`, and `action(actions)`."
+        )
+        if self._model_update_mode == "tool":
+            tool_line = (
+                "- Only tool: `python`. It inspects state and provides `action(actions)` to execute "
+                "environment actions and `update_memory(...)` to save revised persistent memory fields."
+            )
+        tool_section = [
+            "Python tool:",
+            tool_line,
+            "- Only letter-coded board views and lightweight metadata are exposed; raw numeric color IDs are not available.",
+            "- Keep tool output compact: use `current_frame.segmentation` as the primary view, and `current_frame.ascii` only for a small specific region; never print full boards.",
+            "- For the most recent change, read `last_transition.diff`; for any other pair of frames use `frame_diff(before, after)`. `history[-1].frame` is the current frame, not the previous one.",
+        ]
+
+        act_section = [
+            "How to act:",
+            "- Use Python to inspect the evidence, refine your models from the newest history, and search or score candidate actions or short sequences against the current goal as you currently understand it.",
+        ]
+        if action_num == 0:
+            act_section.append(
+                "- Ground yourself in `current_frame` before acting, but start with a compact structural summary rather than restating the full frame."
+            )
+        else:
+            act_section.append(
+                "- Focus on what changed most recently in `history`, update the target environment change if needed, and separate gameplay-object changes from HUD-only changes."
+            )
+        act_section.append(
+            "- You may call `action(actions)` more than once in one Python snippet if your search or control loop needs it, "
             "but stop immediately if a result reports `game_over`, `run_complete`, `level_completed`, or `done`."
         )
-        lines.extend(self._summarized_knowledge_lines())
-        lines.append("end of world model. ")
-        if action_num == 0:
-            lines.append(
-                "Ground yourself in `current_frame` before acting, but start with a compact structural summary rather than restating the full frame."
-            )
-        else:
-            lines.append(
-                "Focus on what changed most recently in `history`, update the target environment change if needed, and separate gameplay-object changes from HUD-only changes."
-            )
-        lines.extend(
-            [
-                "When ready, call `action(actions)` from inside the `python` tool with the best valid action or ordered batch selected by your code. If your code has found a reliable short sequence, prefer batching it in one call.",
-                "You may call `action(actions)` more than once in one Python snippet if your search or control loop needs it.",
-                "If you include assistant text before a tool call, keep it short and use it to update the world model. Helpful optional prefixes are `World model:`, `Goal model:`, `Action model:`, `Recent findings:`, `Open questions:`, `Plan:`, and `Cross-level notes:`.",
-                TOOL_CALL_FORMAT_GUIDANCE,
-            ]
+        act_section.append(
+            "- When ready, call `action(actions)` from inside the `python` tool with the best valid action or ordered batch selected by your code. If your code has found a reliable short sequence, prefer batching it in one call."
         )
+        act_section.append(f"- {TOOL_CALL_FORMAT_GUIDANCE}")
         if "MOUSE" in _normalize_valid_actions(valid_actions):
-            lines.append("If you use MOUSE, include integer row and col arguments.")
-        return "\n".join(lines)
+            act_section.append("- If you use MOUSE, include integer row and col arguments.")
+
+        intro = "\n".join(intro_lines)
+        rest_parts: list[str] = []
+        if outcome_lines:
+            rest_parts.append("\n".join(outcome_lines))
+        rest_parts.extend(
+            "\n".join(section)
+            for section in (state_section, memory_section, tool_section, act_section)
+        )
+        return intro, "\n\n".join(rest_parts)
 
     def _tools(self, state_path: Path) -> list[dict[str, Any]]:
         self._ensure_session(state_path)
-        return [
+        tools = [
             {
                 "type": "function",
                 "function": {
@@ -1290,6 +1513,7 @@ class ToolAgent:
                 },
             }
         ]
+        return tools
 
     def _chat_completion(
         self,
@@ -1561,6 +1785,7 @@ class ToolAgent:
             timeout_seconds=self._python_timeout,
             initial_state=_serialized_runtime_state(),
             action_handler=_handle_action,
+            memory_handler=self._apply_memory_update,
         )
 
         action_results = [
@@ -1599,6 +1824,38 @@ class ToolAgent:
             step_executed=step_executed,
         )
 
+    def _apply_memory_update(self, fields: dict[str, Any]) -> dict[str, Any]:
+        field_map = {
+            "world_model": "world_model",
+            "goal_model": "goal_model",
+            "action_model": "action_model",
+            "recent_findings": "recent_findings",
+            "open_questions": "open_questions",
+            "plan": "current_plan",
+            "cross_level_notes": "cross_level_notes",
+        }
+        invalid_fields = [
+            name
+            for name in field_map
+            if name in fields
+            and fields[name] not in (None, "")
+            and not isinstance(fields[name], str)
+        ]
+        if invalid_fields:
+            return {"error": f"Model fields must be strings: {', '.join(invalid_fields)}"}
+
+        updated: list[str] = []
+        for argument_name, state_name in field_map.items():
+            value = fields.get(argument_name)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            self._summarized_knowledge[state_name] = _normalize_summary_text(
+                value,
+                max_chars=None,
+            )
+            updated.append(argument_name)
+        return {"updated": updated}
+
     def _dispatch_tool(self, state_path: Path, name: str, arguments: dict[str, Any]) -> _ToolDispatchResult:
         self._ensure_session(state_path)
         if name == "python":
@@ -1611,26 +1868,75 @@ class ToolAgent:
         *,
         tools: list[dict[str, Any]] | None = None,
     ) -> int:
-        payload: dict[str, Any] = {"messages": messages}
+        countable, image_count = _replace_image_parts(messages)
+        payload: dict[str, Any] = {"messages": countable}
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = _request_tool_choice(tools)
-        return _estimate_tokens(payload)
+        return _estimate_tokens(payload) + image_count * _LOCAL_ANALYZER_IMAGE_TOKEN_COST
 
-    def _drop_oldest_history_block(self, history: list[dict[str, Any]], *, preserve_recent: int) -> bool:
-        removable = len(history) - preserve_recent
-        if removable <= 0:
+    def _is_history_turn_start(self, message: dict[str, Any]) -> bool:
+        """A step starts at the user message carrying that step's board images.
+
+        Mid-step follow-up prompts ("You have not acted yet...") are plain
+        string-content user messages, so keying on the image parts keeps them
+        from being mistaken for step boundaries. With grid images disabled
+        there is nothing to key on, so every user message opens a step -- the
+        pre-image behavior.
+        """
+        if str(message.get("role", "")).strip() != "user":
             return False
-        first = history.pop(0)
-        first_role = str(first.get("role", "")).strip()
-        if first_role in {"assistant", "tool"}:
-            while history and history[0].get("role") == "tool" and len(history) > preserve_recent:
-                history.pop(0)
-            return True
-        while history and history[0].get("role") == "tool" and len(history) > preserve_recent:
-            history.pop(0)
-        while history and history[0].get("role") != "user" and len(history) > preserve_recent:
-            history.pop(0)
+        content = message.get("content")
+        if isinstance(content, list):
+            # Live images mark the current step; the placeholder marks the
+            # older steps whose images have been stripped from history.
+            return any(
+                isinstance(part, dict)
+                and (
+                    part.get("type") == "image_url"
+                    or (part.get("type") == "text" and part.get("text") == _STEP_IMAGE_PLACEHOLDER)
+                )
+                for part in content
+            )
+        return not self._grid_images_enabled
+
+    def _keep_recent_steps(self, history: list[dict[str, Any]], *, max_steps: int) -> list[dict[str, Any]]:
+        """Keep only the most recent ``max_steps`` whole steps.
+
+        A fixed step window is the primary context bound: it makes prompt
+        length a function of steps rather than tokens, which keeps the two
+        board images per step affordable and makes eviction predictable. It
+        also means the prefix shifts every step, so prefix-cache reuse is
+        deliberately scoped to the requests *within* one step.
+        """
+        if max_steps <= 0:
+            return list(history)
+        starts = [index for index, message in enumerate(history) if self._is_history_turn_start(message)]
+        if len(starts) <= max_steps:
+            return list(history)
+        return list(history[starts[len(starts) - max_steps] :])
+
+    def _drop_oldest_history_turn(self, history: list[dict[str, Any]]) -> bool:
+        """Drop the oldest whole turn: its user message plus everything up to the next turn start.
+
+        Evicting whole turns (never mid-turn fragments) keeps the surviving
+        history structurally valid -- no orphaned tool results after an
+        assistant ``tool_calls`` message -- and puts every eviction on a
+        stable message boundary. The final turn is never dropped.
+        """
+        if not history:
+            return False
+        start = 0
+        while start < len(history) and not self._is_history_turn_start(history[start]):
+            start += 1
+        if start >= len(history):
+            return False
+        end = start + 1
+        while end < len(history) and not self._is_history_turn_start(history[end]):
+            end += 1
+        if end >= len(history):
+            return False
+        del history[:end]
         return True
 
     def _keep_recent_history_turns(
@@ -1662,11 +1968,48 @@ class ToolAgent:
             trimmed.pop(0)
         return trimmed
 
+    @staticmethod
+    def _strip_images_from_message(message: dict[str, Any]) -> dict[str, Any]:
+        """Replace any ``image_url`` parts with ``_STEP_IMAGE_PLACEHOLDER``.
+
+        Only the step being opened sends real images; older steps keep their
+        text and a placeholder where each board was. Two images cost ~2k
+        tokens, so carrying them for the whole window would spend a third of
+        a 32k budget on boards the model has already described in text.
+
+        Rewriting a persisted message normally invalidates the server's
+        prefix cache from that point on, which is why the pre-step-window
+        design went to such lengths to avoid it. Under a rolling step window
+        that cost is already sunk: evicting the oldest step shifts every
+        later token on every step, so the prefix never survives a step
+        boundary regardless.
+        """
+        content = message.get("content")
+        if not isinstance(content, list):
+            return message
+        if not any(isinstance(part, dict) and part.get("type") == "image_url" for part in content):
+            return message
+        new_content: list[Any] = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                new_content.append({"type": "text", "text": _STEP_IMAGE_PLACEHOLDER})
+            else:
+                new_content.append(part)
+        return {**message, "content": new_content}
+
     def _persistent_history_messages(self, messages: list[dict[str, Any]], *, tools: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         trimmed = self._trim_messages_for_context(messages, tools=tools)
         if not trimmed:
             return []
         trimmed_history = trimmed[1:]
+        if self._context_steps > 0:
+            # Step-window mode: whole steps only. Images are stripped on the
+            # way into history, so a request only ever carries the two boards
+            # of the step being opened regardless of window size.
+            return [
+                self._strip_images_from_message(message)
+                for message in self._drop_until_first_user_message(trimmed_history)
+            ]
         history = self._keep_recent_history_turns(
             trimmed_history,
             max_turns=_PERSISTENT_HISTORY_ASSISTANT_TURNS,
@@ -1679,24 +2022,34 @@ class ToolAgent:
             previous_message = trimmed_history[len(trimmed_history) - len(history) - 1]
             if str(previous_message.get("role", "")).strip() == "user":
                 history = [previous_message, *history]
-        return self._drop_until_first_user_message(history)
+        history = self._drop_until_first_user_message(history)
+        # Legacy token-only mode (context_steps = 0): history must stay
+        # text-only or a long run would blow the server's image cap.
+        return [self._strip_images_from_message(message) for message in history]
 
     def _trim_messages_for_context(
         self,
         messages: list[dict[str, Any]],
         *,
         tools: list[dict[str, Any]] | None = None,
-        preserve_recent: int = 1,
         extra_safety_tokens: int = 0,
     ) -> list[dict[str, Any]]:
         if not messages:
             return []
         system_message = messages[0]
         history = list(messages[1:])
-        preserve_recent = max(0, preserve_recent)
+        # The step window is the primary bound and applies to the request as
+        # built -- including the step being opened -- so a request never holds
+        # more than ``context_steps`` steps (2 * that many board images).
+        if self._context_steps > 0:
+            history = self._keep_recent_steps(history, max_steps=self._context_steps)
         budget_tokens = max(1, self._context_budget_tokens - max(0, extra_safety_tokens))
+        # Safety net only: the step window is what normally bounds the
+        # request. This evicts whole steps until the estimate fits, and stops
+        # as soon as it does -- trimming further would throw away context the
+        # window deliberately kept.
         while history and self._estimate_request_input_tokens([system_message, *history], tools=tools) > budget_tokens:
-            if not self._drop_oldest_history_block(history, preserve_recent=preserve_recent):
+            if not self._drop_oldest_history_turn(history):
                 break
         history = self._drop_until_first_user_message(history)
         return [system_message, *history]
@@ -1704,14 +2057,12 @@ class ToolAgent:
     def _force_reduce_messages(
         self,
         messages: list[dict[str, Any]],
-        *,
-        preserve_recent: int = 1,
     ) -> list[dict[str, Any]]:
         if not messages:
             return []
         system_message = messages[0]
         history = list(messages[1:])
-        if not self._drop_oldest_history_block(history, preserve_recent=max(0, preserve_recent)):
+        if not self._drop_oldest_history_turn(history):
             return list(messages)
         return [system_message, *history]
 
@@ -1736,7 +2087,7 @@ class ToolAgent:
         analyzer_log = transcript_path or (state_path.parent / f"{state_path.stem}_analyzer.txt")
         prompt_log = _resolve_prompt_log_path(state_path)
         current_frame, history_entries = load_runtime_state(state_path)
-        user_prompt = self._build_user_prompt(
+        intro_prompt, rest_prompt = self._build_user_prompt(
             action_num,
             valid_actions=valid_actions,
             current_frame=current_frame,
@@ -1760,15 +2111,30 @@ class ToolAgent:
             if transcript_updated is not None:
                 transcript_updated("".join(transcript_parts))
 
+        before_frame, after_frame = self._step_boundary_frames(
+            current_frame,
+            history_entries,
+            self._last_step_summary,
+        )
+        user_message = self._build_user_message(
+            intro_prompt,
+            rest_prompt,
+            before_frame=before_frame,
+            after_frame=after_frame,
+        )
         append_transcript("SYSTEM PROMPT", self._system_prompt)
-        append_transcript("USER PROMPT", user_prompt)
+        append_transcript("USER PROMPT", _render_user_message_text(user_message))
 
         previous_history_messages = list(self._history_messages)
         preserve_history = True
+        initial_messages: list[dict[str, Any]] = [
+            {"role": "system", "content": self._system_prompt},
+            *self._history_messages,
+            user_message,
+        ]
         messages: list[dict[str, Any]] = self._trim_messages_for_context(
-            [{"role": "system", "content": self._system_prompt}, *self._history_messages, self._build_user_message(user_prompt, current_frame)],
+            initial_messages,
             tools=self._tools(state_path),
-            preserve_recent=1,
         )
         step_executed = False
         captured_reasoning = ""
@@ -1924,12 +2290,19 @@ class ToolAgent:
                             "Emit exactly one `python` tool call directly as your next response. "
                             "Do not place `<tool_call>` markup inside reasoning, explanation, or notes. "
                         )
+                    model_update_guidance = (
+                        "If helpful, include short world-model update lines such as `World model:`, `Goal model:`, `Action model:`, `Recent findings:`, `Open questions:`, `Plan:`, or `Cross-level notes:`. "
+                    )
+                    if self._model_update_mode == "tool":
+                        model_update_guidance = (
+                            "If the observed effect of `last_action` was not what your carried models predicted, save what you learned by calling `update_memory(...)` in your python code. "
+                        )
                     followup_prompt = (
                         f"{followup_prefix}"
                         "Then investigate and revise your working world model of what the level contains, what actions appear to do, what the current goal seems to be, and what plan looks best. "
-                        "If helpful, include short world-model update lines such as `World model:`, `Goal model:`, `Action model:`, `Recent findings:`, `Open questions:`, `Plan:`, or `Cross-level notes:`. "
+                        f"{model_update_guidance}"
                         "Call the `python` tool with code that inspects `current_frame`, `previous_frame`, `last_transition`, `history`, or `valid_actions` -- use `current_frame.segmentation` as the primary view, and `.ascii` only for a small specific region -- "
-                        "compare `previous_frame` to `current_frame` for the most recent change, "
+                        "reads `last_transition.diff` for the most recent change"
                         "derives a compact board summary, programs a small search or scorer over candidate actions or short sequences, "
                         "then call `action(actions)` inside Python with the best valid action or ordered batch that your code selected. "
                         f"{TOOL_CALL_FORMAT_GUIDANCE}"
@@ -2049,6 +2422,7 @@ class ToolAgent:
             f"tool_output_tokens: {self._tool_output_tokens}\n"
             f"yield_seconds: {self._yield_seconds if self._yield_seconds is not None else 'disabled'}\n"
             f"available_tools: python\n"
+            f"model_update_mode: {self._model_update_mode}\n"
             f"python_timeout_seconds: {self._python_timeout}\n"
             f"history_messages: {len(self._history_messages)}\n"
             f"step_executed: {step_executed}\n"
