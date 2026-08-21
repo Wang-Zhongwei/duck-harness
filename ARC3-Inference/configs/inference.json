@@ -64,7 +64,6 @@
     "app_name": "ARC3 Agent Harness",
     "max_output": 0,
     "thinking": true,
-    "model_update_mode": "tool",
     "temperature": 1.0,
     "top_p": 0.95,
     "top_k": 20,
