@@ -44,15 +44,9 @@ export CUDA_HOME="${CUDA_HOME:-/opt/ohpc/pub/apps/nvidia/nvhpc/24.11/Linux_x86_6
 # asserted on both passes; the patched 20260820 run logged zero.
 export TAAF_PATCH_VLLM_MTP_RACE="${TAAF_PATCH_VLLM_MTP_RACE:-1}"
 
-# `make sbatch` re-runs itself over `ssh $(SBATCH_LOGIN_HOST)` whenever the local
-# short hostname differs from it -- and that fresh login shell drops every export
-# above. SBATCH_LOGIN_HOST defaults to "coe-hpc3", but the box that name resolves
-# to reports itself as "g17", so the hop ALWAYS fired and the run reached the
-# compute node without UV_OFFLINE/UV_CACHE_DIR, dying on a wheels.vllm.ai fetch
-# that no compute node can reach. When sbatch is already on PATH here there is
-# nothing to hop to, so point the check at ourselves and submit in-process.
-if command -v sbatch >/dev/null 2>&1; then
-  export SBATCH_LOGIN_HOST="${SBATCH_LOGIN_HOST:-$(hostname -s)}"
-fi
-
+# NOTE: do NOT try to skip the Makefile's `ssh $(SBATCH_LOGIN_HOST)` hop by
+# testing `command -v sbatch` here -- coe-hpc1 also ships /usr/bin/sbatch, and
+# that test would submit to hpc1's cluster instead of hpc3's. The hop now
+# carries the offline environment itself (SBATCH_OFFLINE_ENV in the Makefile),
+# so it is safe from either host.
 exec make sbatch "$@"

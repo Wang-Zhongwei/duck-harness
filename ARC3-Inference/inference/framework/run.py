@@ -242,9 +242,55 @@ _SLURM_FORWARDED_ENV = (
 )
 
 
+# Every one of these must reach the worker or the job is dead on arrival, so
+# they are checked here -- the single chokepoint that writes --export -- rather
+# than trusted. 20260821_221223 burned two GPU allocations because a submit path
+# that skipped scripts/sbatch_coe_hpc3.sh produced a job with none of them: uv
+# spent 46s failing to reach wheels.vllm.ai, which no compute node can resolve.
+# A wrong value is worse than a missing one (a profile-default
+# HF_HOME=~/.cache/huggingface looks set but points away from the weight store),
+# so values are validated, not just presence.
+_SLURM_ENV_REQUIREMENTS: tuple[tuple[str, str, str], ...] = (
+    ("UV_CACHE_DIR", "dir", "the prefetched uv wheel cache; without it uv resolves against an empty cache and reaches for PyPI"),
+    ("UV_OFFLINE", "one", "forces uv to fail fast on a cache miss instead of hanging on a network it cannot reach"),
+    ("HF_HOME", "dir", "the vLLM container weight store; the profile default points somewhere with no weights"),
+    ("HF_HUB_OFFLINE", "one", "skips the huggingface.co freshness HEAD whose connect timeouts eat the server start budget"),
+    ("CUDA_HOME", "dir", "nvcc for flashinfer's JIT of Qwen3.x GDN kernels; without it vLLM boots and 500s every request"),
+)
+
+_SLURM_ENV_OVERRIDE = "ARC3_ALLOW_UNSAFE_SLURM_ENV"
+
+
+def _require_slurm_offline_env() -> None:
+    """Refuse to submit a Slurm job whose worker environment is unusable."""
+    if os.environ.get(_SLURM_ENV_OVERRIDE, "").strip() == "1":
+        return
+    problems: list[str] = []
+    for name, kind, why in _SLURM_ENV_REQUIREMENTS:
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            problems.append(f"  {name} is unset -- {why}")
+        elif kind == "one" and raw != "1":
+            problems.append(f'  {name}={raw!r} must be "1" -- {why}')
+        elif kind == "dir" and not Path(raw).is_dir():
+            problems.append(f"  {name}={raw!r} is not a directory -- {why}")
+    if not problems:
+        return
+    raise ValueError(
+        "Refusing to submit a Slurm run: the worker environment would not survive "
+        "on a compute node with no outbound internet.\n"
+        + "\n".join(problems)
+        + "\n\nSubmit through the Makefile, which sets these itself:\n"
+        "  make sbatch RUN_NAME=<name>          (or: bash scripts/sbatch_coe_hpc3.sh RUN_NAME=<name>)\n"
+        "Override a single value with e.g. `make sbatch SBATCH_HF_HOME=...`.\n"
+        f"Set {_SLURM_ENV_OVERRIDE}=1 only if you know this cluster differs."
+    )
+
+
 def _format_slurm_export_flag(
     override_path: Path, extra_env: dict[str, str] | None = None
 ) -> str:
+    _require_slurm_offline_env()
     values = ["ALL", f"UV_OVERRIDE={override_path}"]
     forwarded = {
         name: os.environ[name]

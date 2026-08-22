@@ -123,6 +123,22 @@ SERVE_LOGIN_HOST ?= coe-hpc3
 SERVE_REMOTE_DIR ?= $(REPO_ROOT)
 SBATCH_LOGIN_HOST ?= $(SERVE_LOGIN_HOST)
 SBATCH_REMOTE_DIR ?= $(REPO_ROOT)
+
+# The worker bootstrap needs these on a compute node with no outbound internet.
+# They are defined HERE, not inherited from whoever invoked make, because the
+# old arrangement -- exported by scripts/sbatch_coe_hpc3.sh into the caller's
+# shell -- was lost by both `make sbatch` (no wrapper) and the `ssh` hop below,
+# and a job missing them dies ~46s into its GPU allocation fetching
+# wheels.vllm.ai. Distinct SBATCH_* names on purpose: a profile that sets
+# HF_HOME=~/.cache/huggingface must not be able to poison the value we send.
+# `?=` still lets a deliberate `make sbatch SBATCH_HF_HOME=...` win.
+SBATCH_UV_CACHE_DIR ?= $(HOME)/.cache/uv
+SBATCH_UV_OFFLINE ?= 1
+SBATCH_HF_HOME ?= $(REPO_ROOT)/.cache/vllm-container/hf
+SBATCH_HF_HUB_OFFLINE ?= 1
+SBATCH_CUDA_HOME ?= /opt/ohpc/pub/apps/nvidia/nvhpc/24.11/Linux_x86_64/24.11/cuda/12.6
+SBATCH_PATCH_VLLM_MTP_RACE ?= 1
+SBATCH_OFFLINE_ENV = UV_CACHE_DIR="$(SBATCH_UV_CACHE_DIR)" UV_OFFLINE="$(SBATCH_UV_OFFLINE)" HF_HOME="$(SBATCH_HF_HOME)" HF_HUB_OFFLINE="$(SBATCH_HF_HUB_OFFLINE)" CUDA_HOME="$(SBATCH_CUDA_HOME)" TAAF_PATCH_VLLM_MTP_RACE="$(SBATCH_PATCH_VLLM_MTP_RACE)"
 SERVE_SERVER_HOST ?= 0.0.0.0
 SERVE_SERVER_START_TIMEOUT ?= 1800
 SERVE_SLURM_JOB_NAME ?= arc3-vllm-serve
@@ -611,10 +627,10 @@ interactive: _taaf-run
 sbatch:
 	@current_host="$$($(PYTHON) -c 'import socket; print(socket.gethostname().split(".")[0])' 2>/dev/null || hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)"; \
 	if [ "$$current_host" = "$(SBATCH_LOGIN_HOST)" ]; then \
-		$(MAKE_BIN) sbatch-submit; \
+		env $(SBATCH_OFFLINE_ENV) $(MAKE_BIN) sbatch-submit; \
 	else \
 		echo "Submitting game run from $(SBATCH_LOGIN_HOST):$(SBATCH_REMOTE_DIR)"; \
-		ssh "$(SBATCH_LOGIN_HOST)" 'cd "$(SBATCH_REMOTE_DIR)" && $(MAKE_BIN) sbatch-submit $(MAKEOVERRIDES)'; \
+		ssh "$(SBATCH_LOGIN_HOST)" 'cd "$(SBATCH_REMOTE_DIR)" && env $(SBATCH_OFFLINE_ENV) $(MAKE_BIN) sbatch-submit $(MAKEOVERRIDES)'; \
 	fi
 
 sbatch-submit: CONFIG_PATH = $(SBATCH_EFFECTIVE_CONFIG_PATH)
