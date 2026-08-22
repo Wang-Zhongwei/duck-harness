@@ -954,12 +954,29 @@ def report_vllm_resolved_config() -> None:
     for name in ('architecture', 'quantization', 'kv_cache_dtype'):
         if name not in resolved:
             print(f'WARNING: could not read {name} from the vLLM engine log.', flush=True)
-    mismatched = [
-        f'{name}: asked {want!r}, serving {resolved[name]!r}'
-        for name, want in (('kv_cache_dtype', str(KV_CACHE_DTYPE).strip()),)
-        if want and name in resolved and resolved[name] != want
-    ]
-    assert not mismatched, 'vLLM resolved a different config than requested: ' + '; '.join(mismatched)
+    # vLLM logs the RESOLVED torch dtype (`torch.float8_e4m3fn`), not the CLI spelling
+    # (`fp8_e4m3`). Kernel taaf-qwen38-nvfp4-vllm v1 asserted the two were equal and tore
+    # down a perfectly healthy server 7.5 minutes into startup. Compare normalised, and
+    # even then only warn: a wrong KV dtype costs memory, not correctness, and the
+    # multimodal smoke test below is what actually proves the server serves.
+    want = _normalise_kv_dtype(str(KV_CACHE_DTYPE).strip())
+    have = _normalise_kv_dtype(resolved.get('kv_cache_dtype', ''))
+    if want and have and want != have:
+        print(
+            f'WARNING: vLLM resolved kv_cache_dtype {resolved["kv_cache_dtype"]!r}, '
+            f'but {KV_CACHE_DTYPE!r} was requested. Continuing; check KV capacity in the log.',
+            flush=True,
+        )
+
+
+def _normalise_kv_dtype(value: str) -> str:
+    # 'fp8' and 'fp8_e4m3' both resolve to float8_e4m3fn on CUDA; 'fp8_e5m2' to
+    # float8_e5m2. Strip the 'torch.' prefix and the 'fn' suffix so the CLI and the
+    # resolved spellings meet in the middle.
+    value = value.strip().lower().removeprefix('torch.')
+    aliases = {'fp8': 'float8_e4m3', 'fp8_e4m3': 'float8_e4m3', 'fp8_e5m2': 'float8_e5m2',
+               'float8_e4m3fn': 'float8_e4m3', 'float8_e4m3fnuz': 'float8_e4m3'}
+    return aliases.get(value, value)
 
 
 def smoke_request(messages, tools=None, tool_choice='auto', timeout=300,

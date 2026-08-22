@@ -333,8 +333,13 @@ SpeculativeConfig(method='mtp', num_spec_tokens=3)
 Loading drafter model...
 Detected MTP model. Sharing target model embedding weights with the draft model.
 quantization=compressed-tensors            <-- NVFP4 recognised
-kv_cache_dtype=fp8_e4m3
+kv_cache_dtype=torch.float8_e4m3fn       <-- the RESOLVED torch dtype, not the CLI spelling
 ```
+
+That last line is a trap of its own: the CLI takes `fp8_e4m3` but the log reports
+`torch.float8_e4m3fn`. Kernel `taaf-qwen38-nvfp4-vllm` v1 asserted the two were equal and
+shut down a healthy server 7.5 minutes into startup. Normalise before comparing, and warn
+rather than assert -- the smoke test is the gate.
 
 **`quantization=compressed-tensors` is the check that matters.** Do *not* reuse the old
 "`quantization: null` means broken" heuristic — that was wrong. SGLang reported
