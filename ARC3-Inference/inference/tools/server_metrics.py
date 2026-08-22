@@ -30,7 +30,9 @@ Aggregation semantics, which the numbers are meaningless without:
   interval. A 2-GPU run therefore reports ~2x a single server, and
   ``running_requests.max`` reads as the whole run's concurrency, not one
   GPU's share. ``per_server`` keeps each log's own mean so the split is still
-  visible. Earlier score files (no ``aggregation`` key) pooled per-server
+  visible, including throughput, cache, KV, and queue distributions. Run-to-run
+  comparisons with different server counts must equal-weight the per-server
+  means rather than compare fleet totals. Earlier score files (no ``aggregation`` key) pooled per-server
   samples into one distribution instead, which reads as a single-server
   figure and is not comparable to this one on multi-GPU runs.
 - Cache hit rates are vLLM sliding-window metrics over recent queries, not
@@ -285,6 +287,37 @@ def _fleet_intervals(found: list[TrialServerMetrics]) -> list[_Interval] | None:
     return intervals
 
 
+def _summarize_server(item: TrialServerMetrics) -> dict[str, Any]:
+    """Build one server's complete metric block for normalized comparisons."""
+    samples = item.samples
+    active = [sample for sample in samples if sample.active]
+    return {
+        "log": str(item.log_path),
+        "sample_count": len(samples),
+        "active_sample_count": len(active),
+        "duty_cycle": (len(active) / len(samples)) if samples else None,
+        "prompt_throughput_tokens_per_s": _stats([sample.prompt_tps for sample in active]),
+        "generation_throughput_tokens_per_s": _stats([sample.gen_tps for sample in active]),
+        "prefix_cache_hit_rate_pct": _rate_stats(
+            [sample.prefix_hit for sample in samples if sample.prefix_hit is not None]
+        ),
+        "mm_cache_hit_rate_pct": _rate_stats(
+            [sample.mm_hit for sample in samples if sample.mm_hit is not None]
+        ),
+        "gpu_kv_cache_usage_pct": _stats(
+            [sample.kv_usage for sample in samples if sample.kv_usage is not None]
+        ),
+        "running_requests": _stats([float(sample.running) for sample in active]),
+        "waiting_requests": _stats([float(sample.waiting) for sample in active]),
+        "saturated_sample_fraction": (
+            sum(1 for sample in active if sample.waiting > 0) / len(active)
+            if active
+            else None
+        ),
+        "startup_seconds": item.startup_seconds,
+    }
+
+
 def summarize(metrics: list[TrialServerMetrics]) -> dict[str, Any]:
     """Fold per-trial metrics into one payload block."""
     found = [item for item in metrics if item.found]
@@ -321,19 +354,7 @@ def summarize(metrics: list[TrialServerMetrics]) -> dict[str, Any]:
         "interval_count": len(intervals),
         "prompt_throughput_tokens_per_s": _stats([interval.prompt_tps for interval in intervals]),
         "generation_throughput_tokens_per_s": _stats([interval.gen_tps for interval in intervals]),
-        "per_server": [
-            {
-                "log": str(item.log_path),
-                "active_sample_count": sum(1 for sample in item.samples if sample.active),
-                "prompt_throughput_tokens_per_s": _stats(
-                    [sample.prompt_tps for sample in item.samples if sample.active]
-                ),
-                "generation_throughput_tokens_per_s": _stats(
-                    [sample.gen_tps for sample in item.samples if sample.active]
-                ),
-            }
-            for item in found
-        ],
+        "per_server": [_summarize_server(item) for item in found],
         "prefix_cache_hit_rate_pct": _rate_stats(
             [sample.prefix_hit for sample in samples if sample.prefix_hit is not None]
         ),
@@ -382,6 +403,8 @@ def build_server_block(trial_dirs: list[Path]) -> dict[str, Any]:
         "Throughput and queue depth are fleet totals: per-server samples are binned by "
         "timestamp into 10 s intervals and summed across servers (see per_server for the "
         "split). Averaged over active intervals only (see duty_cycle); "
+        "run-to-run serving comparisons should equal-weight per_server means when server "
+        "counts differ. "
         "cache hit rates are vLLM sliding-window values, so mean/min/max describe the "
         "distribution and last is the final window."
     )

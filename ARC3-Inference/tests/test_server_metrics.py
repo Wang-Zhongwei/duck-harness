@@ -66,6 +66,32 @@ def test_throughput_excludes_idle_intervals_but_reports_duty_cycle(tmp_path: Pat
     assert block["duty_cycle"] == 2 / 3
 
 
+
+
+def test_per_server_metrics_stay_separate_from_fleet_totals(tmp_path: Path) -> None:
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first = parse_server_log(
+        _write_log(first_dir, lines=[_stat("10", 100.0, 10.0, 1, 0, 40.0, 80.0)])
+    )
+    second = parse_server_log(
+        _write_log(second_dir, lines=[_stat("10", 300.0, 30.0, 1, 0, 80.0, 100.0)])
+    )
+
+    block = summarize([first, second])
+
+    assert block["prompt_throughput_tokens_per_s"]["mean"] == 400.0
+    assert [item["prompt_throughput_tokens_per_s"]["mean"] for item in block["per_server"]] == [
+        100.0,
+        300.0,
+    ]
+    assert [item["prefix_cache_hit_rate_pct"]["mean"] for item in block["per_server"]] == [
+        40.0,
+        80.0,
+    ]
+
 def test_cache_rates_report_distribution_and_last(tmp_path: Path) -> None:
     log = _write_log(
         tmp_path,
@@ -82,6 +108,12 @@ def test_cache_rates_report_distribution_and_last(tmp_path: Path) -> None:
     assert prefix["max"] == 80.0
     assert prefix["last"] == 60.0  # final window, not the max
     assert block["mm_cache_hit_rate_pct"]["last"] == 100.0
+    per_server = block["per_server"][0]
+    assert per_server["sample_count"] == 3
+    assert per_server["duty_cycle"] == 1.0
+    assert per_server["prefix_cache_hit_rate_pct"] == prefix
+    assert per_server["mm_cache_hit_rate_pct"]["last"] == 100.0
+    assert round(per_server["gpu_kv_cache_usage_pct"]["mean"], 1) == 3.8
 
 
 def test_saturation_and_request_counts(tmp_path: Path) -> None:

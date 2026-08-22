@@ -1277,7 +1277,7 @@ class ToolAgent:
                     "description": _PYTHON_TOOL_DESCRIPTION,
                     "parameters": {
                         "type": "object",
-                        "properties": {
+                           "properties": {
                             "code": {
                                 "type": "string",
                                 "description": (
