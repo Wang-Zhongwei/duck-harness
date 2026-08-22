@@ -323,7 +323,25 @@ python -m vllm.entrypoints.openai.api_server
   --trust-remote-code
   --default-chat-template-kwargs '{"preserve_thinking": true, "reasoning_effort": "xhigh"}'
   --speculative-config '{"method": "mtp", "num_speculative_tokens": 3}'
+  --enable-prompt-tokens-details             # or the image smoke test cannot see the image
 ```
+
+**The probe never sent an image.** Its sanity battery and C=16 load were text-only, so the
+multimodal path is the one thing the A/B could not validate -- and it is where kernel
+`taaf-qwen38-nvfp4-vllm` v2 died. The engine was sighted (vision encoder attention
+initialised, encoder cache profiled with image items, and the model answered
+"Checkerboard." to a checkerboard) but `usage.prompt_tokens_details` came back `None`, and the
+smoke gate read `image_tokens` from it. Two separate facts:
+
+- `prompt_tokens_details` is **off by default in every vLLM release** (`cli_args.py`
+  `enable_prompt_tokens_details: bool = False` in both 0.19.0 and 0.27.1).
+- the per-modality count is `multimodal_tokens: {"image": N}` in 0.27.1; 0.19.0 reported no
+  per-modality count at all. `image_tokens` is **SGLang's** field name -- the gate had only
+  ever run against SGLang.
+
+The launcher now passes the flag, reads both shapes, and also sends the same prompt without
+the image part: a positive `prompt_tokens` delta proves the image was consumed whatever the
+details field is called next release.
 
 Confirm in the engine log that all of these actually took effect:
 

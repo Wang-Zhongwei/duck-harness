@@ -905,6 +905,11 @@ def start_vllm_server() -> None:
         # NVFP4 checkpoints carry a custom architecture (Qwen3_5MTP) that will not load
         # without this.
         '--trust-remote-code',
+        # Off by default in every vLLM release (0.19 and 0.27.1 both gate it). Without it
+        # usage.prompt_tokens_details is None and the image smoke test below cannot see
+        # that the image was consumed -- kernel taaf-qwen38-nvfp4-vllm v2 died on exactly
+        # that with a perfectly sighted server.
+        '--enable-prompt-tokens-details',
     ]
     # Previously hardcoded-absent, so configs/inference.json's kaggle.attention_backend
     # and kaggle.kv_cache_dtype reached only the SGLang branch. On sm_120 both matter:
@@ -1016,9 +1021,22 @@ def smoke_request(messages, tools=None, tool_choice='auto', timeout=300,
         'tool_calls': message.get('tool_calls') or [],
         'finish_reason': choice.get('finish_reason'),
         'usage': usage,
-        'image_tokens': (usage.get('prompt_tokens_details') or {}).get('image_tokens') or 0,
+        'image_tokens': _image_tokens_from_usage(usage),
         'truncated': choice.get('finish_reason') == 'length',
     }
+
+
+def _image_tokens_from_usage(usage: dict) -> int:
+    # Two engines, two shapes. SGLang: prompt_tokens_details.image_tokens. vLLM >= 0.27:
+    # prompt_tokens_details.multimodal_tokens = {"image": N} (0.19 reported no per-modality
+    # count at all). Both need --enable-prompt-tokens-details / the SGLang equivalent to
+    # be present in the first place.
+    details = usage.get('prompt_tokens_details') or {}
+    direct = details.get('image_tokens')
+    if direct:
+        return int(direct)
+    per_modality = details.get('multimodal_tokens') or {}
+    return int(per_modality.get('image') or 0)
 
 
 def run_api_smoke_test() -> None:
@@ -1082,19 +1100,29 @@ def run_api_smoke_test() -> None:
                 'drives the game entirely through tool calls, so this would score 0 on '
                 f'every game. content={result["content"][:400]!r}'
             )
+    image_prompt = 'Reply with one word describing this image.'
     result = smoke_request([{'role': 'user', 'content': [
-        {'type': 'text', 'text': 'Reply with one word describing this image.'},
+        {'type': 'text', 'text': image_prompt},
         {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + SMOKE_TEST_PNG_B64}},
     ]}])
+    # Second signal, independent of how (or whether) the engine itemises usage: the same
+    # prompt with the image part removed. Image placeholders are counted in prompt_tokens
+    # at PREFILL, so a positive delta proves the image was consumed no matter what the
+    # details field is called this release. Both signals are printed; either one passes.
+    text_twin = smoke_request([{'role': 'user', 'content': [{'type': 'text', 'text': image_prompt}]}],
+                              max_tokens=8)
+    image_token_delta = (int((result['usage'] or {}).get('prompt_tokens') or 0)
+                         - int((text_twin['usage'] or {}).get('prompt_tokens') or 0))
     print(f"image  : finish={result['finish_reason']} image_tokens={result['image_tokens']} "
+          f"prompt_token_delta_vs_text_only={image_token_delta} "
           f"content={result['content'][:150]!r} usage={result['usage']}", flush=True)
-    # The one hard assert. image_tokens is counted at PREFILL, so it is known before a
-    # single token is generated: conclusive regardless of truncation, sampling or model
-    # skill. Non-empty content would not be -- a server that dropped the image still
-    # answers, just blindly.
-    assert result['image_tokens'] > 0, (
-        f'The image part produced no image tokens ({result["usage"]}), so the server is not '
-        f'actually looking at the grid and the agent would play blind.'
+    # The one hard assert. Both signals are known before a single token is generated, so
+    # this is conclusive regardless of truncation, sampling or model skill. Non-empty
+    # content would not be -- a server that dropped the image still answers, just blindly.
+    assert result['image_tokens'] > 0 or image_token_delta > 0, (
+        f'The image part added no prompt tokens (with image: {result["usage"]}; text only: '
+        f'{text_twin["usage"]}), so the server is not actually looking at the grid and the '
+        f'agent would play blind.'
     )
     # THE check a bounded smoke test structurally cannot make. Every request above caps
     # max_tokens, so every one of them returns; production sends no cap at all, so a model
