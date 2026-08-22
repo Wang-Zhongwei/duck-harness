@@ -7,24 +7,36 @@ from dataclasses import dataclass
 
 from inference.utils.openai_compat import normalize_provider
 
-DEFAULT_VLLM_WHEELHOUSE_DATASET_SOURCE = "driessmit1/arc3-vllm-h100-wheelhouse-v3"
+# vLLM 0.27.1 resolved on a real python 3.12 for sm_120. The older H100 wheelhouse
+# (driessmit1/arc3-vllm-h100-wheelhouse-v3, vllm 0.19.0) is NOT interchangeable: it
+# predates NVFP4 support on sm_120, and it was built for sm_90. See VLLM-KAGGLE-SETUP.md.
+DEFAULT_VLLM_WHEELHOUSE_DATASET_SOURCE = "jonathanwang2022/vllm-0271-wheelhouse-sm120"
 # SGLang ships as one opaque >1 GiB blob (a tar of a site-packages tree) because Kaggle
 # silently fails to create a dataset from an archive of ~100k files.
 DEFAULT_SGLANG_BLOB_DATASET_SOURCE = "jonathanwang2022/sglang-0517-sp-blob"
 DEFAULT_QWEN_MODEL_DATASET_SOURCE = "jakobbrggen/qwen3-8-27b-fp8-hf-snapshot"
-# MEASURED BROKEN on sm_120 + SGLang 0.5.17, kernel sglang-quality-matrix: coherent for a
-# few tokens, then degenerate ("blue blue blue blue", empty \frac{}{} groups, dropped
-# function words). 5-gram diversity 0.109-0.385 across every NVFP4 row against 0.873-0.984
-# for FP8 on the same server. Independent of speculative decoding (turning it OFF made
-# NVFP4 worse, 0.031) and of KV dtype (bf16 did not help). Kept as a named constant so the
-# next person does not re-derive it: do not point the model dataset here.
+# The Kaggle default, and it MUST be served by vLLM. Its lm_head is FP8, not NVFP4
+# (no `weight_scale_2` in the safetensors index), which unsloth documents as "vLLM only
+# for now (SGLang is not supported)". Pairing it with SGLang is what produced the
+# degeneration recorded in kernel sglang-quality-matrix -- 5-gram diversity 0.109-0.385
+# against 0.873-0.984 for FP8 -- which was a checkpoint/engine mismatch, NOT a property
+# of NVFP4. Kernel nvfp4-vendor-ab v5 settled it: on vLLM 0.27.1 this checkpoint passes
+# the sanity battery at diversity 1.000 and runs ~2.5x faster than SGLang x RadixArk at
+# C=16 (544.8/578.6 vs 225.5/229.1 agg tok/s). See VLLM-KAGGLE-SETUP.md.
 DEFAULT_QWEN_NVFP4_MODEL_DATASET_SOURCE = "jonathanwang2022/qwen38-27b-nvfp4-unsloth"
+# The SGLang-compatible sibling: NVFP4 lm_head, carries `weight_scale_2`. The two
+# checkpoints are not interchangeable across engines -- check the lm_head keys, not the
+# name.
+DEFAULT_QWEN_NVFP4_RADIXARK_MODEL_DATASET_SOURCE = "jonathanwang2022/qwen38-27b-nvfp4-radixark"
 DEFAULT_SERVED_MODEL_NAME = "Qwen/Qwen3.8-27B-FP8"
 DEFAULT_SERVED_MODEL_NAME_NVFP4 = "Qwen/Qwen3.8-27B-NVFP4"
 DEFAULT_VLLM_PORT = 1234
 DEFAULT_VLLM_MAX_MODEL_LEN = 65536
 DEFAULT_VLLM_TENSOR_PARALLEL_SIZE = 1
-DEFAULT_WHEELHOUSE_STAMP_TEXT = "vllm==0.19.0 torch==2.10.0 flashinfer==0.6.6\n"
+# Must track the wheelhouse above: the stamp is what invalidates a cached install.
+DEFAULT_WHEELHOUSE_STAMP_TEXT = (
+    "vllm==0.27.1 torch==2.13.0 flashinfer-python==0.6.16.post3\n"
+)
 
 # The 25 official ARC-AGI-3 games. The first 16 are the original Kaggle duck
 # validation harness order; the remaining 9 complete the official tag set.
@@ -88,7 +100,11 @@ def _kaggle_backend() -> str:
 def _runtime_dataset_source(cfg: DuckKaggleVllmConfig) -> str:
     """Runtime slot: the vLLM wheelhouse, or the SGLang site-packages blob."""
     if _kaggle_backend() != "sglang":
-        return cfg.wheelhouse_dataset_source
+        # Same reason as the model source below: HarnessSolver never populates its
+        # kaggle_* fields from JSON, so without this the only way to repoint the
+        # wheelhouse is to edit this file. The wheelhouse and the checkpoint have to
+        # move together (0.19.0 cannot serve NVFP4 on sm_120), so both need a knob.
+        return _kaggle_env("KAGGLE_WHEELHOUSE_DATASET_SOURCE", cfg.wheelhouse_dataset_source)
     return _kaggle_env("SGLANG_BLOB_DATASET_SOURCE", DEFAULT_SGLANG_BLOB_DATASET_SOURCE)
 
 
@@ -98,8 +114,9 @@ def _model_dataset_source(cfg: DuckKaggleVllmConfig) -> str:
     override = _kaggle_env("KAGGLE_MODEL_DATASET_SOURCE")
     if override:
         return override
-    # NOT NVFP4, on either backend. The unsloth NVFP4 checkpoint decodes coherently for a
-    # few tokens and then degenerates -- see DEFAULT_QWEN_NVFP4_MODEL_DATASET_SOURCE.
+    # The checkpoint must match the backend, and the failure mode is silent: a mismatched
+    # pairing serves fluent garbage rather than raising. unsloth NVFP4 -> vLLM,
+    # RadixArk NVFP4 -> SGLang, FP8 -> either. See DEFAULT_QWEN_NVFP4_MODEL_DATASET_SOURCE.
     return cfg.model_dataset_source
 
 
@@ -185,6 +202,10 @@ def duck_kaggle_setup_command(config: DuckKaggleVllmConfig | None = None) -> str
         "__SERVER_BACKEND__": repr(_kaggle_backend()),
         # Server knobs previously unreachable from JSON: configs/inference.json
         # set "kv_cache_dtype" but nothing read it (a dead key on every run).
+        # NOTE: one key, two spellings. vLLM wants TRITON_ATTN, SGLang wants triton, and
+        # each rejects the other's at argument parsing -- loudly, at launch, which is why
+        # this is left as a straight pass-through rather than a translation that could
+        # mask a genuine typo. Flip kaggle.attention_backend when you flip kaggle.backend.
         "__ATTENTION_BACKEND__": repr(_kaggle_env("KAGGLE_ATTENTION_BACKEND")),
         "__KV_CACHE_DTYPE__": repr(_kaggle_env("KAGGLE_KV_CACHE_DTYPE")),
         # vLLM takes --speculative-config as one JSON blob; SGLang wants four flags.
@@ -254,6 +275,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -275,7 +297,11 @@ VLLM_TENSOR_PARALLEL_SIZE = __VLLM_TENSOR_PARALLEL_SIZE__
 # Empty leaves it off (vLLM default), matching the local/slurm path in the Makefile.
 VLLM_SPECULATIVE_CONFIG = __VLLM_SPECULATIVE_CONFIG__
 WORKING_DIR = Path(os.environ['TAAF_KAGGLE_WORKING_DIR'])
-SITE_PACKAGES = WORKING_DIR / 'vllm-site-packages'
+# NOT under WORKING_DIR. The tree expands to ~10 GB of torch + CUDA, which counts
+# against the 20 GiB notebook-output cap and ships in `kaggle kernels output` -- that is
+# how run 1 of nvfp4-vendor-ab lost its failure cause behind a multi-GB download. Same
+# reasoning as SGLANG_TREE below; with /tmp, run 2's whole output was 57 KB.
+SITE_PACKAGES = Path('/tmp/vllm-site-packages')
 VLLM_SERVER_LOG = WORKING_DIR / 'vllm-openai-server.log'
 VLLM_SERVER_PID = WORKING_DIR / 'vllm-openai-server.pid'
 INSTALL_STAMP = SITE_PACKAGES / f'.{WHEELHOUSE_SLUG}'
@@ -376,15 +402,45 @@ def assert_expected_cuda_gpu() -> None:
 
 
 def vllm_env() -> dict[str, str]:
+    # Every entry below is load-bearing on sm_120 + NVFP4; removing any one reproduces a
+    # documented engine-core death. See VLLM-KAGGLE-SETUP.md section 7.
     env = os.environ.copy()
     existing = env.get('PYTHONPATH', '')
     env['PYTHONPATH'] = str(SITE_PACKAGES) if not existing else f'{SITE_PACKAGES}{os.pathsep}{existing}'
+    sp = str(SITE_PACKAGES)
+    libs = [f'{sp}/torch/lib'] + sorted(str(path) for path in (SITE_PACKAGES / 'nvidia').glob('*/lib'))
+    libs += ['/usr/local/nvidia/lib64', '/usr/lib/x86_64-linux-gnu']
+    env['LD_LIBRARY_PATH'] = ':'.join(libs + [env.get('LD_LIBRARY_PATH', '')]).strip(':')
+    # The NVFP4 dense GEMM goes through FlashInfer whatever --attention-backend says:
+    # vllm/utils/flashinfer.py flashinfer_mm_fp4 -> mm_fp4 backend "cutlass" ->
+    # get_gemm_sm120_module_cutlass_fp4(), which JIT-compiles at engine init and needs
+    # nvcc. Without CUDA_HOME/PATH, FlashInfer cannot read the CUDA version,
+    # _normalize_cuda_arch raises "SM 12.x requires CUDA >= 12.9", an enclosing
+    # `except Exception` swallows it, TARGET_CUDA_ARCHS is left EMPTY, and the engine
+    # dies with the misleading "No supported CUDA architectures found for major
+    # versions [12]". Attention backend and FP4 GEMM are separate axes.
+    cu13 = SITE_PACKAGES / 'nvidia/cu13'
+    env['CUDA_HOME'] = str(cu13)
+    env['PATH'] = f'{cu13}/bin:' + env.get('PATH', '')
+    # Short-circuits both the device probe and the normaliser. '12.0f' is exactly what
+    # the normaliser emits for SM 12.0 under CUDA >= 12.9.
+    env.setdefault('FLASHINFER_CUDA_ARCH_LIST', '12.0f')
+    # nvcc reports 13.4 while cuda_runtime_api.h says CUDART_VERSION 13000; CCCL
+    # hard-errors on the skew and kills the JIT. sglang_env() works around the same one.
+    env['NVCC_APPEND_FLAGS'] = (env.get('NVCC_APPEND_FLAGS', '') + ' -DCCCL_DISABLE_CTK_COMPATIBILITY_CHECK').strip()
+    # LINK time, and distinct from LD_LIBRARY_PATH: the JIT's `ld -lcudart` resolves
+    # against LIBRARY_PATH. /usr/local/nvidia/lib64 carries libcuda but NOT libcudart,
+    # so having it alone is not enough -- the wheel lib dirs must be here too.
+    linkdirs = sorted(str(path) for path in (SITE_PACKAGES / 'nvidia').glob('*/lib'))
+    env['LIBRARY_PATH'] = ':'.join(linkdirs + ['/usr/local/nvidia/lib64', env.get('LIBRARY_PATH', '')]).strip(':')
     env.update(
         {
             'USE_TF': '0',
             'TRANSFORMERS_NO_TF': '1',
             'TRANSFORMERS_NO_TORCHVISION': '1',
             'VLLM_NO_USAGE_STATS': '1',
+            'HF_HUB_OFFLINE': '1',
+            'TRANSFORMERS_OFFLINE': '1',
         }
     )
     return env
@@ -432,7 +488,89 @@ def install_vllm_wheelhouse() -> None:
     ]
     print('Installing vLLM wheelhouse into', SITE_PACKAGES, flush=True)
     subprocess.run(cmd, check=True)
+    repair_vllm_install()
     INSTALL_STAMP.write_text(STAMP_TEXT, encoding='utf-8')
+
+
+def repair_vllm_install() -> None:
+    # Required on sm_120: without this the FlashInfer FP4 JIT fails to link and the
+    # engine core dies at init. Same soname repair prepare_sglang_tree() does for the
+    # SGLang blob. See VLLM-KAGGLE-SETUP.md section 6.
+    for binary in (SITE_PACKAGES / 'nvidia/cu13/bin').glob('*'):
+        # The FP4 JIT shells out to these; a lost exec bit is a silent build failure.
+        try:
+            binary.chmod(binary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        except OSError:
+            pass
+    # pip's CUDA wheels ship ONLY versioned sonames (libcudart.so.13), but `ld -lcudart`
+    # resolves `libcudart.so`. ~42 aliases in practice.
+    aliased = 0
+    for lib in sorted((SITE_PACKAGES / 'nvidia').glob('*/lib/*.so.*')):
+        alias = lib.parent / (lib.name.split('.so.')[0] + '.so')
+        if not alias.exists():
+            try:
+                alias.symlink_to(lib.name)
+                aliased += 1
+            except OSError:
+                pass
+    nvcc = SITE_PACKAGES / 'nvidia/cu13/bin/nvcc'
+    cudart = SITE_PACKAGES / 'nvidia/cu13/lib/libcudart.so'
+    print(
+        f'vLLM install repair: {aliased} soname aliases, libcudart.so={cudart.exists()}, '
+        f'nvcc={"present" if nvcc.exists() else "MISSING"}',
+        flush=True,
+    )
+    apply_mtp_race_patch()
+
+
+# vLLM moved the MTP draft loop between releases. 0.19.0 kept the CUDA-graph buffer
+# writes in eagle.py; by 0.27.1 EagleProposer is a 22-line subclass and the loop lives in
+# llm_base_proposer.py. Patching only eagle.py reports "anchor absent" and protects
+# NOTHING -- the exact gap that previously cost a 10.8 h run.
+MTP_PATCH_TARGETS = (
+    'vllm/v1/spec_decode/llm_base_proposer.py',
+    'vllm/v1/spec_decode/eagle.py',
+)
+
+
+def apply_mtp_race_patch() -> None:
+    # vllm#40756: the sequential MTP draft loop writes the CUDA-graph input buffers with
+    # no barrier before the draft model reads them, giving a sticky device-side assert
+    # (CUDA error 710) at MTP >= 2. Harmless at MTP off, so it is applied unconditionally.
+    marker = 'torch.accelerator.current_stream().synchronize()'
+    anchor = (
+        '            self.input_ids[:batch_size] = input_ids\n'
+        '            self.hidden_states[:batch_size] = hidden_states\n'
+    )
+    results: list[str] = []
+    patched_any = False
+    seen_any = False
+    for relative in MTP_PATCH_TARGETS:
+        target = SITE_PACKAGES / relative
+        if not target.exists():
+            results.append(f'{relative}: absent')
+            continue
+        seen_any = True
+        text = target.read_text(encoding='utf-8')
+        if marker in text:
+            results.append(f'{relative}: already patched')
+            patched_any = True
+        elif anchor in text:
+            target.write_text(text.replace(anchor, anchor + '            ' + marker + '\n', 1), encoding='utf-8')
+            results.append(f'{relative}: APPLIED')
+            patched_any = True
+        else:
+            results.append(f'{relative}: anchor absent')
+    # Say so loudly rather than guessing at a wrong patch site. An unrecognised layout
+    # must NOT read as reassuring: a silent "applied" that meant nothing is what let the
+    # race through last time.
+    if not seen_any:
+        status = 'NO TARGET FILE FOUND -- MTP UNPROTECTED'
+    elif patched_any:
+        status = '; '.join(results)
+    else:
+        status = 'ANCHOR NOT FOUND IN ANY TARGET -- MTP UNPROTECTED: ' + '; '.join(results)
+    print('MTP race patch:', status, flush=True)
 
 
 def request_json(url: str, payload: dict | None = None, timeout: int = 30) -> dict:
@@ -764,13 +902,64 @@ def start_vllm_server() -> None:
         'qwen3',
         '--max-model-len',
         str(VLLM_MAX_MODEL_LEN),
+        # NVFP4 checkpoints carry a custom architecture (Qwen3_5MTP) that will not load
+        # without this.
+        '--trust-remote-code',
     ]
+    # Previously hardcoded-absent, so configs/inference.json's kaggle.attention_backend
+    # and kaggle.kv_cache_dtype reached only the SGLang branch. On sm_120 both matter:
+    # TRITON_ATTN measured 2.70x over FA2 and 1.36x over FLASHINFER (FlashInfer's
+    # Blackwell trtllm-gen kernels are gated to SM100), and fp8_e4m3 doubles KV capacity.
+    if str(ATTENTION_BACKEND).strip():
+        cmd += ['--attention-backend', str(ATTENTION_BACKEND).strip()]
+    if str(KV_CACHE_DTYPE).strip():
+        cmd += ['--kv-cache-dtype', str(KV_CACHE_DTYPE).strip()]
     if str(VLLM_SPECULATIVE_CONFIG).strip():
         cmd += ['--speculative-config', str(VLLM_SPECULATIVE_CONFIG).strip()]
     print('Starting vLLM OpenAI server:', ' '.join(cmd), flush=True)
     process = subprocess.Popen(cmd, env=vllm_env(), stdout=log_handle, stderr=subprocess.STDOUT, text=True)
     VLLM_SERVER_PID.write_text(str(process.pid), encoding='utf-8')
-    wait_for_vllm_server()
+    wait_for_vllm_server(SERVER_START_TIMEOUT)
+    report_vllm_resolved_config()
+
+
+VLLM_RESOLVED_CONFIG_PATTERNS = (
+    ('architecture', r'Resolved architecture:\s*(\S+)'),
+    ('quantization', r'quantization=([^\s,)]+)'),
+    ('kv_cache_dtype', r'kv_cache_dtype=([^\s,)]+)'),
+    ('speculative', r'(SpeculativeConfig\(method=[^)]*\))'),
+    ('drafter', r'(Loading drafter model)'),
+)
+
+
+def report_vllm_resolved_config() -> None:
+    # vLLM has no /get_server_info, so the engine log is the only place the resolved
+    # config appears. `quantization=compressed-tensors` is the line that matters for an
+    # NVFP4 checkpoint -- an FP4 misconfiguration does not raise, it serves fluent
+    # garbage.
+    #
+    # Deliberately a REPORT with a narrow assert, not a gate. Do NOT resurrect the old
+    # "quantization null means broken" heuristic: it was wrong (SGLang reported null
+    # while generating perfectly coherent 16k text). And a health check that can withhold
+    # the run on a log-wording change costs more than it protects -- the multimodal smoke
+    # test below is what actually proves the server generates. So: absence warns,
+    # contradiction raises.
+    log_text = VLLM_SERVER_LOG.read_text(encoding='utf-8', errors='replace') if VLLM_SERVER_LOG.exists() else ''
+    resolved = {}
+    for name, pattern in VLLM_RESOLVED_CONFIG_PATTERNS:
+        found = re.findall(pattern, log_text)
+        if found:
+            resolved[name] = found[-1]
+    print('vLLM resolved config: ' + json.dumps(resolved), flush=True)
+    for name in ('architecture', 'quantization', 'kv_cache_dtype'):
+        if name not in resolved:
+            print(f'WARNING: could not read {name} from the vLLM engine log.', flush=True)
+    mismatched = [
+        f'{name}: asked {want!r}, serving {resolved[name]!r}'
+        for name, want in (('kv_cache_dtype', str(KV_CACHE_DTYPE).strip()),)
+        if want and name in resolved and resolved[name] != want
+    ]
+    assert not mismatched, 'vLLM resolved a different config than requested: ' + '; '.join(mismatched)
 
 
 def smoke_request(messages, tools=None, tool_choice='auto', timeout=300,
