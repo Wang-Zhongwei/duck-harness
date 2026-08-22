@@ -6,6 +6,8 @@ import gzip
 import json
 import logging
 import mimetypes
+import re
+import subprocess
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +24,8 @@ log = logging.getLogger(__name__)
 _GZIP_MIN_BYTES = 1024
 _STATIC_SUBDIRS = {"solver_analysis", "movies"}
 _SPLIT_STATIC_SUBDIRS = {"passes", "seeds"}
+_COMMIT_RE = re.compile(r"(?m)^commit:\s*([0-9a-fA-F]{40})\s*$")
+_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 @dataclass(frozen=True)
@@ -42,18 +46,161 @@ def _comparison_json_path(runs_dir: Path) -> Path:
     return runs_dir / "inference_score_comparison.json"
 
 
+def _apply_unified_file_diff(base_text: str, diff_text: str, file_path: str) -> str:
+    """Apply one file's unified diff from a run's git_info.txt snapshot."""
+    marker = f"diff --git a/{file_path} b/{file_path}"
+    start = diff_text.find(marker)
+    if start < 0:
+        return base_text
+    end = diff_text.find("\ndiff --git ", start + len(marker))
+    section = diff_text[start : end if end >= 0 else None].splitlines()
+    base_lines = base_text.splitlines()
+    output: list[str] = []
+    cursor = 0
+    index = 0
+
+    while index < len(section):
+        match = _HUNK_RE.match(section[index])
+        if match is None:
+            index += 1
+            continue
+        old_start = int(match.group(1)) - 1
+        if old_start < cursor:
+            raise ValueError(f"Overlapping diff hunks for {file_path}")
+        output.extend(base_lines[cursor:old_start])
+        cursor = old_start
+        index += 1
+        while index < len(section) and not section[index].startswith("@@ "):
+            line = section[index]
+            if line.startswith("diff --git "):
+                break
+            if line == "\\ No newline at end of file":
+                index += 1
+                continue
+            if not line or line[0] not in {" ", "+", "-"}:
+                index += 1
+                continue
+            content = line[1:]
+            if line[0] in {" ", "-"}:
+                if cursor >= len(base_lines) or base_lines[cursor] != content:
+                    raise ValueError(f"Diff context does not match {file_path}")
+                cursor += 1
+            if line[0] in {" ", "+"}:
+                output.append(content)
+            index += 1
+
+    output.extend(base_lines[cursor:])
+    return "\n".join(output) + ("\n" if base_text.endswith("\n") else "")
+
+
+def _load_run_inference_config(run_dir: Path) -> dict | None:
+    """Load a bundled inference.json, falling back to run git provenance."""
+    bundled_relative_path = Path("src/ARC3-Inference/configs/inference.json")
+    snapshot_paths = [
+        run_dir / "inference.json",
+        run_dir / "configs" / "inference.json",
+        run_dir / bundled_relative_path,
+        *sorted(run_dir.glob(f"passes/*/{bundled_relative_path}")),
+        *sorted(run_dir.glob(f"seeds/*/{bundled_relative_path}")),
+        *sorted(run_dir.glob(f"*/{bundled_relative_path}")),
+    ]
+    seen: set[Path] = set()
+    for snapshot_path in snapshot_paths:
+        if snapshot_path in seen or not snapshot_path.is_file():
+            continue
+        seen.add(snapshot_path)
+        try:
+            payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            log.warning("Could not load inference config snapshot %s", snapshot_path, exc_info=True)
+            continue
+        if isinstance(payload, dict):
+            return payload
+
+    git_info_path = run_dir / "git_info.txt"
+    if not git_info_path.is_file():
+        return None
+    git_info = git_info_path.read_text(encoding="utf-8")
+    match = _COMMIT_RE.search(git_info)
+    if match is None:
+        return None
+
+    project_root = Path(__file__).resolve().parents[1]
+    try:
+        repository_root = Path(
+            subprocess.run(
+                ["git", "-C", str(project_root), "rev-parse", "--show-toplevel"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.strip()
+        )
+        config_path = (project_root / "configs" / "inference.json").relative_to(repository_root).as_posix()
+        committed = subprocess.run(
+            ["git", "-C", str(repository_root), "show", f"{match.group(1)}:{config_path}"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout
+        reconstructed = _apply_unified_file_diff(committed, git_info, config_path)
+        payload = json.loads(reconstructed)
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError, json.JSONDecodeError):
+        log.warning("Could not recover inference config for %s", run_dir, exc_info=True)
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _load_evaluation(evaluation_path: Path) -> dict | None:
+    """Return a run's evaluation.json as a dict, or None when it is unusable."""
+    try:
+        evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        log.warning("Skipping unreadable evaluation %s", evaluation_path, exc_info=True)
+        return None
+    return evaluation if isinstance(evaluation, dict) else None
+
+
 def _load_comparison_payload(runs_dir: Path) -> dict:
-    """Limit comparisons to evaluated runs shown by the homepage."""
+    """Build the comparison payload from every evaluated run on disk.
+
+    ``<run>/evaluation.json`` is the source of truth for which runs can be
+    compared and for their public scores, so a run shows up as soon as it is
+    evaluated, regardless of whether (or under which name) it was registered.
+    ``inference_score_comparison.json`` only contributes what evaluation.json
+    cannot hold: frontier references, semi-private imports, and score-set labels.
+    """
     payload = load_score_registry(_comparison_json_path(runs_dir))
-    runs = payload.get("runs") if isinstance(payload.get("runs"), dict) else {}
-    eligible = {path.name for path in list_run_dirs(runs_dir) if (path / "evaluation.json").is_file()}
-    retained = {
-        str(run_id): entry
-        for run_id, entry in runs.items()
-        if str(run_id) in eligible
-    }
-    payload["runs"] = retained
-    payload["run_order"] = sorted(retained, key=run_dir_sort_key, reverse=True)
+    registered = payload.get("runs") if isinstance(payload.get("runs"), dict) else {}
+    runs: dict[str, dict] = {}
+    for run_dir in list_run_dirs(runs_dir):
+        evaluation_path = run_dir / "evaluation.json"
+        if not evaluation_path.is_file():
+            continue
+        evaluation = _load_evaluation(evaluation_path)
+        if evaluation is None:
+            continue
+        run_id = run_dir.name
+        registered_entry = registered.get(run_id)
+        entry = {
+            key: value
+            for key, value in (registered_entry.items() if isinstance(registered_entry, dict) else ())
+            if key not in {"scores", "inference_config"}
+        }
+        metadata = evaluation.get("metadata") if isinstance(evaluation.get("metadata"), dict) else {}
+        entry["run_id"] = run_id
+        entry["scores"] = {
+            "public": {
+                "score": evaluation,
+                "score_path": evaluation_path.relative_to(runs_dir).as_posix(),
+                "updated_at": metadata.get("created_at"),
+            }
+        }
+        entry["inference_config"] = _load_run_inference_config(run_dir)
+        runs[run_id] = entry
+    payload["runs"] = runs
+    payload["run_order"] = sorted(runs, key=run_dir_sort_key, reverse=True)
     return payload
 
 

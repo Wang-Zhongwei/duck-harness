@@ -142,6 +142,42 @@
     th { color:var(--muted); font-size:.67rem; text-transform:uppercase; }
     th:first-child,td:first-child { text-align:left; }
     .catalog-run { font-family:monospace; font-weight:700; }
+    .config-panel { padding:0; overflow:hidden; }
+    .config-panel .head { align-items:center; margin:0; padding:18px 20px; }
+    .config-count {
+      flex:none; padding:5px 9px; border-radius:999px; background:#18242d0a;
+      color:var(--muted); font-size:.72rem; font-weight:700;
+    }
+    .config-diff-scroll {
+      max-height:min(280px, 30vh); overflow:auto; overscroll-behavior:contain;
+      border-top:1px solid var(--line);
+    }
+    .config-diff {
+      display:grid; grid-template-columns:minmax(220px,.8fr) repeat(2,minmax(260px,1fr));
+      min-width:780px; font-size:.8rem;
+    }
+    .config-diff-row { display:contents; }
+    .config-cell {
+      min-width:0; padding:12px 16px; border-bottom:1px solid #18242d12;
+    }
+    .config-head {
+      position:sticky; top:0; z-index:1;
+      padding-top:10px; padding-bottom:10px; color:var(--muted); background:#f3ede2;
+      font-size:.67rem; font-weight:800; letter-spacing:.08em; text-transform:uppercase;
+    }
+    .config-key { background:#fffaf1; font-family:monospace; font-weight:700; overflow-wrap:anywhere; }
+    .config-baseline { border-left:1px solid var(--line); background:#6479850b; }
+    .config-candidate { border-left:1px solid var(--line); background:#c55d1f0b; }
+    .config-value code {
+      display:block; color:var(--ink); font:600 .78rem/1.45 monospace;
+      white-space:pre-wrap; overflow-wrap:anywhere;
+    }
+    .config-head small {
+      display:block; margin-top:3px; max-width:28rem; overflow:hidden; color:var(--ink);
+      font:500 .68rem/1.3 monospace; letter-spacing:0; text-overflow:ellipsis;
+      text-transform:none; white-space:nowrap;
+    }
+    .config-empty { padding:18px 20px; border-top:1px solid var(--line); }
     .empty { text-align:center; padding:40px; color:var(--muted); }
     @media(max-width:1000px) {
       .selectors { grid-template-columns:1fr auto 1fr; }
@@ -352,6 +388,65 @@
       }).join("") + '</div>';
     }
 
+    function flattenConfig(value, prefix, output) {
+      const result = output || {};
+      const path = prefix || "";
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        Object.keys(value).sort().forEach((key) => {
+          flattenConfig(value[key], path ? path + "." + key : key, result);
+        });
+      } else if (path) {
+        result[path] = value;
+      }
+      return result;
+    }
+
+    function configValue(value, present) {
+      if (!present) return '<span class="muted">not set</span>';
+      const rendered = JSON.stringify(value);
+      return '<code>' + escapeHtml(rendered === undefined ? String(value) : rendered) + '</code>';
+    }
+
+    function inferenceConfigDiffSection() {
+      const baselineConfig = (registry.runs[baselineId] || {}).inference_config;
+      const candidateConfig = (registry.runs[candidateId] || {}).inference_config;
+      if (!baselineConfig || !candidateConfig) {
+        return '<section class="panel config-panel"><div class="head"><div>' +
+          '<h2>Inference hyperparameter differences</h2>' +
+          '<div class="note">A historical inference.json snapshot is unavailable for one or both runs.</div>' +
+          '</div></div></section>';
+      }
+      const before = flattenConfig(baselineConfig);
+      const after = flattenConfig(candidateConfig);
+      const keys = Array.from(new Set(Object.keys(before).concat(Object.keys(after)))).sort()
+        .filter((key) => !Object.prototype.hasOwnProperty.call(before, key) ||
+          !Object.prototype.hasOwnProperty.call(after, key) ||
+          JSON.stringify(before[key]) !== JSON.stringify(after[key]));
+      const body = keys.length
+        ? '<div class="config-diff-scroll"><div class="config-diff" role="table">' +
+          '<div class="config-diff-row" role="row">' +
+          '<div class="config-cell config-head" role="columnheader">Setting</div>' +
+          '<div class="config-cell config-head config-baseline" role="columnheader">Baseline' +
+          '<small title="' + escapeHtml(baselineId) + '">' + escapeHtml(baselineId) + '</small></div>' +
+          '<div class="config-cell config-head config-candidate" role="columnheader">Candidate' +
+          '<small title="' + escapeHtml(candidateId) + '">' + escapeHtml(candidateId) + '</small></div></div>' +
+          keys.map((key) => {
+            const beforePresent = Object.prototype.hasOwnProperty.call(before, key);
+            const afterPresent = Object.prototype.hasOwnProperty.call(after, key);
+            return '<div class="config-diff-row" role="row">' +
+              '<div class="config-cell config-key" role="rowheader">' + escapeHtml(key) + '</div>' +
+              '<div class="config-cell config-value config-baseline" role="cell">' +
+              configValue(before[key], beforePresent) + '</div>' +
+              '<div class="config-cell config-value config-candidate" role="cell">' +
+              configValue(after[key], afterPresent) + '</div></div>';
+          }).join("") + '</div></div>'
+        : '<div class="note config-empty">No hyperparameter differences.</div>';
+      return '<section class="panel config-panel"><div class="head"><div>' +
+        '<h2>Inference hyperparameter differences</h2>' +
+        '<div class="note">Only differing inference.json settings are shown.</div></div>' +
+        '<span class="config-count">' + keys.length + ' changed</span></div>' + body + '</section>';
+    }
+
     function efficiencyCard(label, key, baseline, candidate) {
       const before = efficiency(baseline)[key];
       const after = efficiency(candidate)[key];
@@ -545,6 +640,52 @@
         '<code>local_run_path</code>. Imports are append-only; linking does not remove history.</div></details>';
     }
 
+    function normalizedServerMetric(score, key) {
+      const server = score && score.server ? score.server : {};
+      const perServer = Array.isArray(server.per_server) ? server.per_server : [];
+      const values = perServer
+        .map((item) => item && item[key] ? Number(item[key].mean) : NaN)
+        .filter(Number.isFinite);
+      if (values.length) {
+        return {
+          value: values.reduce((total, value) => total + value, 0) / values.length,
+          source: "per-server",
+          serverCount: values.length,
+        };
+      }
+      const fallback = server[key] ? Number(server[key].mean) : NaN;
+      const rateMetric = key === "prefix_cache_hit_rate_pct" || key === "gpu_kv_cache_usage_pct";
+      return {
+        value: Number.isFinite(fallback) ? fallback : null,
+        source: rateMetric ? "pooled" : (server.aggregation || "pooled"),
+        serverCount: Number(server.logs_found) || 0,
+      };
+    }
+
+    function serverMetricPair(baseline, candidate, key) {
+      const before = normalizedServerMetric(baseline, key);
+      const after = normalizedServerMetric(candidate, key);
+      return {
+        baseline: before.value,
+        candidate: after.value,
+        baselineSource: before.source,
+        candidateSource: after.source,
+      };
+    }
+
+    function serverCount(score) {
+      const server = score && score.server ? score.server : {};
+      return Array.isArray(server.per_server) && server.per_server.length
+        ? server.per_server.length
+        : (Number(server.logs_found) || 0);
+    }
+
+    function servingMetricLabel(label, metric) {
+      const sources = Array.from(new Set([metric.baselineSource, metric.candidateSource]))
+        .filter((source) => source && source !== "per-server");
+      return sources.length ? label + " (" + sources.join("/") + ")" : label;
+    }
+
     function render() {
       const baseline = runScore(baselineId, scoreSet);
       const candidate = runScore(candidateId, scoreSet);
@@ -567,35 +708,31 @@
       const baselineMean = baselineInference.usage ? baselineInference.usage.mean || {} : {};
       const candidateMean = candidateInference.usage ? candidateInference.usage.mean || {} : {};
       const serverMetrics = {
-        prompt: {
-          baseline: baselineInference.server && baselineInference.server.prompt_throughput_tokens_per_s
-            ? baselineInference.server.prompt_throughput_tokens_per_s.mean : null,
-          candidate: candidateInference.server && candidateInference.server.prompt_throughput_tokens_per_s
-            ? candidateInference.server.prompt_throughput_tokens_per_s.mean : null,
-        },
-        generation: {
-          baseline: baselineInference.server && baselineInference.server.generation_throughput_tokens_per_s
-            ? baselineInference.server.generation_throughput_tokens_per_s.mean : null,
-          candidate: candidateInference.server && candidateInference.server.generation_throughput_tokens_per_s
-            ? candidateInference.server.generation_throughput_tokens_per_s.mean : null,
-        },
-        prefix: {
-          baseline: baselineInference.server && baselineInference.server.prefix_cache_hit_rate_pct
-            ? baselineInference.server.prefix_cache_hit_rate_pct.mean : null,
-          candidate: candidateInference.server && candidateInference.server.prefix_cache_hit_rate_pct
-            ? candidateInference.server.prefix_cache_hit_rate_pct.mean : null,
-        },
-        kv: {
-          baseline: baselineInference.server && baselineInference.server.gpu_kv_cache_usage_pct
-            ? baselineInference.server.gpu_kv_cache_usage_pct.mean : null,
-          candidate: candidateInference.server && candidateInference.server.gpu_kv_cache_usage_pct
-            ? candidateInference.server.gpu_kv_cache_usage_pct.mean : null,
-        },
+        prompt: serverMetricPair(
+          baselineInference, candidateInference, "prompt_throughput_tokens_per_s"
+        ),
+        generation: serverMetricPair(
+          baselineInference, candidateInference, "generation_throughput_tokens_per_s"
+        ),
+        prefix: serverMetricPair(
+          baselineInference, candidateInference, "prefix_cache_hit_rate_pct"
+        ),
+        kv: serverMetricPair(
+          baselineInference, candidateInference, "gpu_kv_cache_usage_pct"
+        ),
       };
+      const hasServingFallback = Object.values(serverMetrics).some((metric) =>
+        metric.baselineSource !== "per-server" || metric.candidateSource !== "per-server"
+      );
+      const servingNote = "Equal-weight per-server means · Baseline: " +
+        serverCount(baselineInference) + " server(s) · Candidate: " +
+        serverCount(candidateInference) + " server(s)." +
+        (hasServingFallback ? " Metrics marked fleet/pooled lack historical per-server detail." : "");
 
       const dashboard = document.getElementById("dashboard");
       dashboard.className = "";
       dashboard.innerHTML =
+        inferenceConfigDiffSection() +
         unlinkedImportsSection() +
         '<section class="hero"><article class="score"><div class="eyebrow">' +
         escapeHtml(scoreSetLabel(scoreSet)) + ' overall score</div><div class="score-line"><span class="score-old">' +
@@ -658,12 +795,13 @@
           {key:"tokens",label:"Total tokens",digits:0},
           {key:"tokensAction",label:"Tokens / action",digits:0},
           {key:"tokensTurn",label:"Tokens / turn",digits:0},
-        ]) + '</section><section class="panel"><div class="head"><h2>Serving behavior</h2></div>' +
+        ]) + '</section><section class="panel"><div class="head"><div><h2>Serving behavior</h2>' +
+        '<div class="note">' + escapeHtml(servingNote) + '</div></div></div>' +
         pairedMetrics(serverMetrics, [
-          {key:"prompt",label:"Prompt throughput / tok/s",digits:0},
-          {key:"generation",label:"Generation throughput / tok/s",digits:1},
-          {key:"prefix",label:"Prefix cache hit / %",digits:1},
-          {key:"kv",label:"GPU KV cache use / %",digits:1},
+          {key:"prompt",label:servingMetricLabel("Prompt throughput / tok/s",serverMetrics.prompt),digits:0},
+          {key:"generation",label:servingMetricLabel("Generation throughput / tok/s",serverMetrics.generation),digits:1},
+          {key:"prefix",label:servingMetricLabel("Prefix cache hit / %",serverMetrics.prefix),digits:1},
+          {key:"kv",label:servingMetricLabel("GPU KV cache use / %",serverMetrics.kv),digits:1},
         ]) + '</section></div>' +
 
         '<details class="panel"><summary>All Qwen 3.8-era scored runs (' +

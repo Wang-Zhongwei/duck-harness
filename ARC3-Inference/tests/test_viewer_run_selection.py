@@ -62,18 +62,34 @@ def test_run_viewer_renders_results_and_switches_to_trace() -> None:
 def test_comparison_payload_uses_evaluated_homepage_runs(tmp_path: Path) -> None:
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
-    score_entry = {"scores": {"public": {"score": {"score": 1.0}}}}
+    score_entry = {"added_at": "2026-08-20T00:00:00Z", "scores": {"public": {"score": {"score": 1.0}}}}
     first_qwen38_run = "20260810_000000_q38"
     unevaluated_run = "20260819_120000_q38"
     distill_run = "20260819_130000_distill"
     latest_qwen38_run = "20260820_000000_q38"
-    run_order = [first_qwen38_run, unevaluated_run, distill_run, latest_qwen38_run]
+    renamed_registry_run = "20260821_000000_old-name"
+    run_order = [first_qwen38_run, unevaluated_run, distill_run, latest_qwen38_run, renamed_registry_run]
     for run_id in (first_qwen38_run, unevaluated_run, latest_qwen38_run):
         _write_viewer_artifact(runs_dir / run_id)
     for run_id in (first_qwen38_run, distill_run, latest_qwen38_run):
         run_dir = runs_dir / run_id
         run_dir.mkdir(exist_ok=True)
-        (run_dir / "evaluation.json").write_text("{}", encoding="utf-8")
+        (run_dir / "evaluation.json").write_text(json.dumps({"score": 1.0}), encoding="utf-8")
+        bundled_root = run_dir if run_id == distill_run else run_dir / "passes" / "0"
+        inference_path = bundled_root / "src" / "ARC3-Inference" / "configs" / "inference.json"
+        inference_path.parent.mkdir(parents=True)
+        inference_path.write_text(
+            json.dumps({"chat": {"temperature": 0.5 if run_id == latest_qwen38_run else 1.0}}),
+            encoding="utf-8",
+        )
+    (runs_dir / latest_qwen38_run / "evaluation.json").write_text(
+        json.dumps({
+            "score": 2.5,
+            "metadata": {"created_at": "2026-08-22T10:00:00Z"},
+            "server": {"per_server": [{"sample_count": 3}]},
+        }),
+        encoding="utf-8",
+    )
     registry = {"version": 3, "minimum_run_date": "20260810", "run_order": run_order, "runs": {run_id: score_entry for run_id in run_order}}
     (runs_dir / "inference_score_comparison.json").write_text(json.dumps(registry), encoding="utf-8")
 
@@ -81,6 +97,61 @@ def test_comparison_payload_uses_evaluated_homepage_runs(tmp_path: Path) -> None
 
     assert payload["run_order"] == [latest_qwen38_run, distill_run, first_qwen38_run]
     assert set(payload["runs"]) == {first_qwen38_run, distill_run, latest_qwen38_run}
+    assert payload["runs"][latest_qwen38_run]["inference_config"]["chat"]["temperature"] == 0.5
+    latest_public = payload["runs"][latest_qwen38_run]["scores"]["public"]
+    assert latest_public["score"]["score"] == 2.5
+    assert latest_public["score_path"] == f"{latest_qwen38_run}/evaluation.json"
+    assert latest_public["updated_at"] == "2026-08-22T10:00:00Z"
+    assert payload["runs"][latest_qwen38_run]["added_at"] == "2026-08-20T00:00:00Z"
+    assert payload["runs"][first_qwen38_run]["scores"]["public"]["score"] == {"score": 1.0}
+
+
+def test_comparison_payload_lists_evaluated_runs_missing_from_registry(tmp_path: Path) -> None:
+    """A renamed or never-registered run is comparable as soon as evaluation.json exists."""
+    runs_dir = tmp_path / "runs"
+    registered_run = "20260815_224235_q38-registered"
+    unregistered_run = "20260821_191552_my-user-prompt-mtp3-vllm"
+    for run_id, score in ((registered_run, 3.2), (unregistered_run, 5.16)):
+        run_dir = runs_dir / run_id
+        run_dir.mkdir(parents=True)
+        (run_dir / "evaluation.json").write_text(json.dumps({"score": score, "games": {}}), encoding="utf-8")
+    registry = {
+        "version": 3,
+        "minimum_run_date": "20260810",
+        "run_order": [registered_run, "20260821_191552_level-review-fixed-mtp3-vllm"],
+        "runs": {
+            registered_run: {"scores": {"public": {"score": {"score": 0.0}}}},
+            "20260821_191552_level-review-fixed-mtp3-vllm": {"scores": {"public": {"score": {"score": 5.16}}}},
+        },
+        "semi_private_scores": [{"id": "import-1", "local_run_path": f"runs/{registered_run}", "score": {"score": 1.1}}],
+        "public_frontier": {"configs": {}},
+    }
+    (runs_dir / "inference_score_comparison.json").write_text(json.dumps(registry), encoding="utf-8")
+
+    payload = _load_comparison_payload(runs_dir)
+
+    assert payload["run_order"] == [unregistered_run, registered_run]
+    assert payload["runs"][unregistered_run]["scores"]["public"]["score"]["score"] == 5.16
+    assert payload["runs"][registered_run]["scores"]["public"]["score"]["score"] == 3.2
+    assert payload["semi_private_scores"][0]["id"] == "import-1"
+    assert payload["public_frontier"] == {"configs": {}}
+
+
+def test_comparison_payload_works_without_registry_and_skips_broken_evaluations(tmp_path: Path) -> None:
+    runs_dir = tmp_path / "runs"
+    good_run = "20260820_000000_good"
+    broken_run = "20260821_000000_broken"
+    for run_id, body in ((good_run, json.dumps({"score": 4.0})), (broken_run, "{not json")):
+        run_dir = runs_dir / run_id
+        run_dir.mkdir(parents=True)
+        (run_dir / "evaluation.json").write_text(body, encoding="utf-8")
+
+    payload = _load_comparison_payload(runs_dir)
+
+    assert payload["version"] == 3
+    assert payload["run_order"] == [good_run]
+    assert payload["runs"][good_run]["scores"]["public"]["score"]["score"] == 4.0
+    assert "score_sets" in payload
 
 
 def test_comparison_defaults_to_previous_run_and_newest_run() -> None:
