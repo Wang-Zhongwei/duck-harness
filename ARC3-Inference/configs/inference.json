@@ -98,7 +98,7 @@
     "server_start_timeout": 1800,
     "max_runtime_minutes": 132,
     "concurrent_jobs": 28,
-    "analyzer_timeout": 400
+    "analyzer_timeout": 360
   },
   "viewer": {
     "port": 8021
