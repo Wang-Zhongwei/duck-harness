@@ -30,10 +30,10 @@
       "gpu_count": 2,
       "time": "16:00:00",
       "image": "",
-      "partition": "gpuqs,condo",
+      "partition": "gpuqs,gpuqm,gpuql,nsfqs,nsfqm,nsfql,condo",
       "nodelist": "",
       "start_local_server": true,
-      "extra_sbatch_flags": ["--account=default", "--qos=normal", "--exclusive"]
+      "extra_sbatch_flags": ["--account=default", "--qos=normal"]
     }
   },
   "server" : {
