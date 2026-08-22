@@ -238,6 +238,7 @@ _SLURM_FORWARDED_ENV = (
     "HF_HOME",
     "HF_HUB_OFFLINE",
     "CUDA_HOME",
+    "TAAF_PATCH_VLLM_MTP_RACE",
 )
 
 

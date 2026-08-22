@@ -451,6 +451,14 @@ server:
 		echo "Override with SERVER_REQUIRE_SLURM=false only if you already have GPU access outside Slurm." >&2; \
 		exit 1; \
 	fi
+	@if [ ! -x "$(SERVER_VENV_VLLM)" ]; then \
+		echo "Server dependencies are missing; running 'make install-server'."; \
+		$(MAKE) install-server; \
+	fi
+	@if [ "$${TAAF_PATCH_VLLM_MTP_RACE:-0}" = "1" ]; then \
+		echo "TAAF_PATCH_VLLM_MTP_RACE=1: patching vLLM MTP drafter (vllm#40756)"; \
+		$(PYTHON) "$(REPO_ROOT)/scripts/patch_vllm_mtp_race.py" --venv "$(dir $(SERVER_VENV_PYTHON)).." || exit 1; \
+	fi
 	@server_api_key=""; \
 	if [ "$(SERVER_REQUIRE_API_KEY)" != "false" ] && [ "$(SERVER_REQUIRE_API_KEY)" != "FALSE" ] && [ "$(SERVER_REQUIRE_API_KEY)" != "0" ]; then \
 		server_api_key="$$(PYTHON="$(PYTHON)" bash "$(REPO_ROOT)/scripts/ensure_server_api_key.sh" "$(SERVER_API_KEY_FILE)")"; \
@@ -502,10 +510,6 @@ server:
 				$(if $(SERVER_SPECULATIVE_CONFIG),--speculative-config '$(SERVER_SPECULATIVE_CONFIG)') \
 				$(if $(SERVER_HF_OVERRIDES),--hf-overrides '$(SERVER_HF_OVERRIDES)') \
 			>"$(SERVER_LOG)" 2>&1 & echo $$! >"$(SERVER_PID)"; \
-		else \
-			echo "Unsupported SERVER_RUNTIME='$(SERVER_RUNTIME)'. Use 'apptainer' or 'venv'." >&2; \
-			exit 1; \
-		fi; \
 		echo "PID: $$(cat "$(SERVER_PID)")"; \
 		echo "First startup can take several minutes while vLLM loads weights and builds compile/cache artifacts."; \
 			echo "Follow startup logs with: tail -f $(SERVER_LOG)"; \

@@ -38,4 +38,21 @@ export CUDA_HOME="${CUDA_HOME:-/opt/ohpc/pub/apps/nvidia/nvhpc/24.11/Linux_x86_6
 # With deployment.slurm.gpu_count > 1 the harness instead submits one 1-GPU job
 # per GPU and splits the passes (and concurrent_jobs) across them -- see
 # _run_split_slurm_local_servers. So gpu_count 2 = 2 jobs x 1 H100.
+# vLLM's sequential MTP draft loop writes the CUDA-graph input buffers without a
+# barrier, so num_speculative_tokens >= 2 hits a sticky device-side assert (710).
+# See vllm-project/vllm#40756. Measured here: the unpatched 20260818 MTP=3 run
+# asserted on both passes; the patched 20260820 run logged zero.
+export TAAF_PATCH_VLLM_MTP_RACE="${TAAF_PATCH_VLLM_MTP_RACE:-1}"
+
+# `make sbatch` re-runs itself over `ssh $(SBATCH_LOGIN_HOST)` whenever the local
+# short hostname differs from it -- and that fresh login shell drops every export
+# above. SBATCH_LOGIN_HOST defaults to "coe-hpc3", but the box that name resolves
+# to reports itself as "g17", so the hop ALWAYS fired and the run reached the
+# compute node without UV_OFFLINE/UV_CACHE_DIR, dying on a wheels.vllm.ai fetch
+# that no compute node can reach. When sbatch is already on PATH here there is
+# nothing to hop to, so point the check at ourselves and submit in-process.
+if command -v sbatch >/dev/null 2>&1; then
+  export SBATCH_LOGIN_HOST="${SBATCH_LOGIN_HOST:-$(hostname -s)}"
+fi
+
 exec make sbatch "$@"
