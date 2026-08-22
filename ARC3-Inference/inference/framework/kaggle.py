@@ -164,13 +164,15 @@ def duck_kaggle_setup_command(config: DuckKaggleVllmConfig | None = None) -> str
         "__MODEL_SLUG__": repr(model_slug),
         "__SERVED_MODEL_NAME__": repr(served_model_name),
         "__VLLM_PORT__": repr(int(cfg.vllm_port)),
-        "__VLLM_MAX_MODEL_LEN__": repr(int(cfg.max_model_len)),
+        # kaggle.max_model_len, exported by the Makefile. The dataclass default is what the
+        # notebook ran until 2026-08-22 regardless of server.max_model_len.
+        "__VLLM_MAX_MODEL_LEN__": repr(int(_kaggle_env("KAGGLE_MAX_MODEL_LEN", str(cfg.max_model_len)))),
         # The launcher's Makefile exports LOCAL_ANALYZER_CONTEXT_WINDOW from
         # JSON shared.context_window (or analyzer.context_window). Embed it
         # here so the agent's prompt budget on Kaggle is the JSON value, not
         # vllm's max-model-len. Falls back to max_model_len if unset.
         "__ANALYZER_CONTEXT_WINDOW__": repr(
-            int(os.environ.get("LOCAL_ANALYZER_CONTEXT_WINDOW") or cfg.max_model_len)
+            int(os.environ.get("LOCAL_ANALYZER_CONTEXT_WINDOW") or _kaggle_env("KAGGLE_MAX_MODEL_LEN", str(cfg.max_model_len)))
         ),
         # Remaining JSON-driven analyzer/multimodal config: the launcher's
         # Makefile exports each from inference.json; embed the launcher value

@@ -91,6 +91,9 @@ KAGGLE_SPEC_EAGLE_TOPK ?= $(shell $(CONFIG_VALUE) kaggle.spec_eagle_topk)
 KAGGLE_SPEC_NUM_DRAFT_TOKENS ?= $(shell $(CONFIG_VALUE) kaggle.spec_num_draft_tokens)
 SGLANG_BLOB_DATASET_SOURCE ?= $(shell $(CONFIG_VALUE) kaggle.sglang_blob_dataset_source)
 KAGGLE_WHEELHOUSE_DATASET_SOURCE ?= $(shell $(CONFIG_VALUE) kaggle.wheelhouse_dataset_source)
+# vLLM --max-model-len on Kaggle. HarnessSolver never fills its kaggle_* fields from JSON,
+# so without this the notebook ran kaggle.py's hardcoded default whatever server.max_model_len said.
+KAGGLE_MAX_MODEL_LEN ?= $(shell $(CONFIG_VALUE) kaggle.max_model_len)
 KAGGLE_MODEL_DATASET_SOURCE ?= $(shell $(CONFIG_VALUE) kaggle.model_dataset_source)
 KAGGLE_SERVED_MODEL_NAME ?= $(shell $(CONFIG_VALUE) kaggle.served_model_name)
 KAGGLE_LIMIT_MM_DATA_PER_REQUEST ?= $(shell $(CONFIG_VALUE) kaggle.limit_mm_data_per_request)
@@ -318,6 +321,7 @@ export SGLANG_BLOB_DATASET_SOURCE
 export KAGGLE_LIMIT_MM_DATA_PER_REQUEST
 export KAGGLE_SERVER_START_TIMEOUT
 export KAGGLE_WHEELHOUSE_DATASET_SOURCE
+export KAGGLE_MAX_MODEL_LEN
 export KAGGLE_MODEL_DATASET_SOURCE
 export KAGGLE_SERVED_MODEL_NAME
 export CHAT_PROVIDER
