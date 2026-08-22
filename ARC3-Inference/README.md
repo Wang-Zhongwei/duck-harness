@@ -342,7 +342,7 @@ make view
 ```
 
 When browsing a run root, the viewer defaults to the newest run dated on or
-after 2026-08-10 that contains viewer artifacts. The run selector uses the same
+after 2026-08-10 that contains viewer artifacts or an evaluation. The run selector uses the same
 Qwen 3.8-era filter. `VIEW_RUN_DIR` remains available as an explicit override.
 
 Override the port:

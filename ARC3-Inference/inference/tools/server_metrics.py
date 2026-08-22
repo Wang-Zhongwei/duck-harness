@@ -24,6 +24,15 @@ Aggregation semantics, which the numbers are meaningless without:
   those with a running/waiting request or non-zero throughput. ``duty_cycle``
   reports what fraction of samples were active, so an active-only mean is
   never read without knowing how much of the run it covers.
+- Throughput and queue depth are **fleet** figures: a multi-GPU run has one
+  server per trial directory, all on one node clock, so samples are binned by
+  timestamp into 10 s intervals and **summed across servers** within each
+  interval. A 2-GPU run therefore reports ~2x a single server, and
+  ``running_requests.max`` reads as the whole run's concurrency, not one
+  GPU's share. ``per_server`` keeps each log's own mean so the split is still
+  visible. Earlier score files (no ``aggregation`` key) pooled per-server
+  samples into one distribution instead, which reads as a single-server
+  figure and is not comparable to this one on multi-GPU runs.
 - Cache hit rates are vLLM sliding-window metrics over recent queries, not
   run-cumulative. They rise and fall during a run, so ``mean``/``min``/``max``
   describe the distribution and ``last`` gives the final window. There is no
@@ -87,6 +96,7 @@ class _Sample:
     kv_usage: float | None
     prefix_hit: float | None
     mm_hit: float | None
+    timestamp: datetime | None = None
 
     @property
     def active(self) -> bool:
@@ -203,6 +213,7 @@ def parse_server_log(path: Path) -> TrialServerMetrics:
                     kv_usage=_opt_float(stat_match.group("kv")),
                     prefix_hit=_opt_float(stat_match.group("prefix")),
                     mm_hit=_opt_float(stat_match.group("mm")),
+                    timestamp=timestamp,
                 )
             )
     return metrics
@@ -232,11 +243,64 @@ def collect_trial_metrics(trial_dir: Path) -> TrialServerMetrics:
     return metrics
 
 
+_INTERVAL_SECONDS = 10
+
+
+@dataclass
+class _Interval:
+    """One logging interval with every server's contribution summed."""
+
+    prompt_tps: float = 0.0
+    gen_tps: float = 0.0
+    running: int = 0
+    waiting: int = 0
+
+
+def _fleet_intervals(found: list[TrialServerMetrics]) -> list[_Interval] | None:
+    """Bin active samples by timestamp and sum across servers per bin.
+
+    Within one bin a server contributes at most once (its latest sample), so
+    cadence jitter that lands two of one server's lines in a bin cannot double
+    count. Returns None when any sample is untimestamped, since the bins would
+    then be meaningless.
+    """
+    bins: dict[int, dict[int, _Sample]] = {}
+    for server_index, item in enumerate(found):
+        for sample in item.samples:
+            if not sample.active:
+                continue
+            if sample.timestamp is None:
+                return None
+            key = int(sample.timestamp.timestamp()) // _INTERVAL_SECONDS
+            bins.setdefault(key, {})[server_index] = sample
+    intervals: list[_Interval] = []
+    for key in sorted(bins):
+        interval = _Interval()
+        for sample in bins[key].values():
+            interval.prompt_tps += sample.prompt_tps
+            interval.gen_tps += sample.gen_tps
+            interval.running += sample.running
+            interval.waiting += sample.waiting
+        intervals.append(interval)
+    return intervals
+
+
 def summarize(metrics: list[TrialServerMetrics]) -> dict[str, Any]:
     """Fold per-trial metrics into one payload block."""
     found = [item for item in metrics if item.found]
     samples = [sample for item in found for sample in item.samples]
     active = [sample for sample in samples if sample.active]
+    intervals = _fleet_intervals(found)
+    if intervals is None:
+        # No timestamps to align on: fall back to treating each sample as its own
+        # interval, which is exact for one server and a per-server pool otherwise.
+        intervals = [
+            _Interval(sample.prompt_tps, sample.gen_tps, sample.running, sample.waiting)
+            for sample in active
+        ]
+        aggregation = "pooled"
+    else:
+        aggregation = "fleet"
 
     status_counts: dict[str, int] = {}
     for item in found:
@@ -253,8 +317,23 @@ def summarize(metrics: list[TrialServerMetrics]) -> dict[str, Any]:
         "sample_count": len(samples),
         "active_sample_count": len(active),
         "duty_cycle": (len(active) / len(samples)) if samples else None,
-        "prompt_throughput_tokens_per_s": _stats([sample.prompt_tps for sample in active]),
-        "generation_throughput_tokens_per_s": _stats([sample.gen_tps for sample in active]),
+        "aggregation": aggregation,
+        "interval_count": len(intervals),
+        "prompt_throughput_tokens_per_s": _stats([interval.prompt_tps for interval in intervals]),
+        "generation_throughput_tokens_per_s": _stats([interval.gen_tps for interval in intervals]),
+        "per_server": [
+            {
+                "log": str(item.log_path),
+                "active_sample_count": sum(1 for sample in item.samples if sample.active),
+                "prompt_throughput_tokens_per_s": _stats(
+                    [sample.prompt_tps for sample in item.samples if sample.active]
+                ),
+                "generation_throughput_tokens_per_s": _stats(
+                    [sample.gen_tps for sample in item.samples if sample.active]
+                ),
+            }
+            for item in found
+        ],
         "prefix_cache_hit_rate_pct": _rate_stats(
             [sample.prefix_hit for sample in samples if sample.prefix_hit is not None]
         ),
@@ -264,10 +343,12 @@ def summarize(metrics: list[TrialServerMetrics]) -> dict[str, Any]:
         "gpu_kv_cache_usage_pct": _stats(
             [sample.kv_usage for sample in samples if sample.kv_usage is not None]
         ),
-        "running_requests": _stats([float(sample.running) for sample in samples]),
-        "waiting_requests": _stats([float(sample.waiting) for sample in samples]),
+        "running_requests": _stats([float(interval.running) for interval in intervals]),
+        "waiting_requests": _stats([float(interval.waiting) for interval in intervals]),
         "saturated_sample_fraction": (
-            sum(1 for sample in samples if sample.waiting > 0) / len(samples) if samples else None
+            sum(1 for interval in intervals if interval.waiting > 0) / len(intervals)
+            if intervals
+            else None
         ),
         "requests": {
             "total": total_requests,
@@ -298,7 +379,9 @@ def build_server_block(trial_dirs: list[Path]) -> dict[str, Any]:
     per_trial_metrics = [collect_trial_metrics(trial_dir) for trial_dir in trial_dirs]
     block = summarize(per_trial_metrics)
     block["notes"] = (
-        "Throughput is averaged over active logging intervals only (see duty_cycle); "
+        "Throughput and queue depth are fleet totals: per-server samples are binned by "
+        "timestamp into 10 s intervals and summed across servers (see per_server for the "
+        "split). Averaged over active intervals only (see duty_cycle); "
         "cache hit rates are vLLM sliding-window values, so mean/min/max describe the "
         "distribution and last is the final window."
     )
