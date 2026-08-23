@@ -10,7 +10,9 @@ The launcher writes two Kaggle bundles under ``benchmark.job_dir``:
 
 from __future__ import annotations
 
+import contextlib
 import csv
+import dataclasses
 import hashlib
 import json
 import os
@@ -173,6 +175,17 @@ class KaggleTarget(taaf.deploy.DeploymentTarget):
     - ``cpu_only``: disables GPU for cheap public/offline smoke tests.
       The default honors R2.52: RTX6000 GPU with internet disabled.
     - ``dry_run``: write bundles and metadata but do not call Kaggle.
+    - ``run_config``: per-run settings rendered *into the notebook* as a
+      ``RUN_CONFIG`` literal rather than baked into the source dataset.
+      ``{"solver": {attr: value}}`` is applied to ``bm.solver`` with
+      ``setattr`` right after the benchmark pickle is loaded;
+      ``{"env": {NAME: value}}`` is exported to the process environment
+      before the setup commands run. Solvers can expose
+      ``kaggle_run_config`` with the same shape; the two are merged
+      (target wins). Every ``solver`` attribute named here is reset to
+      its dataclass default inside the pickled benchmark, so the bundle
+      is independent of these values: a run that changes only them
+      diffs in the notebook and re-uses the uploaded dataset version.
     """
 
     username: str | None = None
@@ -194,6 +207,7 @@ class KaggleTarget(taaf.deploy.DeploymentTarget):
     kernel_push_timeout_s: int | None = None
     dataset_version_message: str = "Update TAAF Kaggle source bundle."
     dry_run: bool = False
+    run_config: dict[str, Any] = field(default_factory=lambda: dict[str, Any]())
 
     # Populated by ``deploy`` / runner so solvers can inspect the real
     # Kaggle mode via ``solver.runtime_environment``.
@@ -264,17 +278,18 @@ class KaggleTarget(taaf.deploy.DeploymentTarget):
         if pip_packages:
             quoted = " ".join(_shell_quote(pkg) for pkg in pip_packages)
             setup_commands.append(f'"$PYTHON" -m pip install --no-deps {quoted}')
+        # Resolved once here so deploy_meta.json records exactly what the notebook got.
+        self.run_config = merge_run_config(_solver_run_config(solver), self.run_config)
 
         staging_root = job_dir / "kaggle"
         source_bundle = staging_root / "source-dataset"
         kernel_bundle = staging_root / "kernel"
         taaf.deploy.write_git_status(job_dir)
-        preamble = taaf.deploy.format_preamble(benchmark)
         _write_source_dataset_bundle(
             benchmark=benchmark,
             target=self,
             bundle_dir=source_bundle,
-            preamble=preamble,
+            run_config=self.run_config,
             setup_commands=setup_commands,
             teardown_commands=teardown_commands,
             make_share_version=self.make_share_version,
@@ -291,6 +306,7 @@ class KaggleTarget(taaf.deploy.DeploymentTarget):
             accelerator=None if self.cpu_only else self.accelerator,
             run_as_submission=self.run_as_submission,
             make_share_version=self.make_share_version,
+            run_config=self.run_config,
         )
 
         self.uploaded = False
@@ -325,6 +341,93 @@ class KaggleTarget(taaf.deploy.DeploymentTarget):
 
 
 KAGGLE_SLUG_MAX_LEN = 50
+
+
+RUN_CONFIG_SECTIONS = ("solver", "env")
+
+
+def merge_run_config(*layers: dict[str, Any] | None) -> dict[str, Any]:
+    """Merge ``{"solver": {...}, "env": {...}}`` layers; later layers win per key."""
+    merged: dict[str, Any] = {section: {} for section in RUN_CONFIG_SECTIONS}
+    for layer in layers:
+        if not layer:
+            continue
+        unknown = set(layer) - set(RUN_CONFIG_SECTIONS)
+        if unknown:
+            raise ValueError(
+                f"run_config sections must be one of {RUN_CONFIG_SECTIONS}, got {sorted(unknown)}."
+            )
+        for section in RUN_CONFIG_SECTIONS:
+            values = layer.get(section) or {}
+            if not isinstance(values, dict):
+                raise ValueError(f"run_config[{section!r}] must be a dict, got {type(values).__name__}.")
+            merged[section].update({str(key): value for key, value in values.items()})
+    # JSON round-trip: the notebook gets a literal, so anything that does not
+    # survive json (Path, datetime, ...) must fail here, on the launcher.
+    return cast(dict[str, Any], json.loads(json.dumps(merged)))
+
+
+def _solver_run_config(solver: object) -> dict[str, Any]:
+    value = getattr(solver, "kaggle_run_config", None)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError(f"solver.kaggle_run_config must be a dict, got {type(value).__name__}.")
+    return cast(dict[str, Any], value)
+
+
+def _render_run_config_literal(run_config: dict[str, Any]) -> str:
+    """A Python literal for the notebook: one key per line, sorted, so a kernel
+    version diff reads as a config diff. Values are JSON scalars/containers (see
+    merge_run_config), whose repr is valid Python."""
+    merged = merge_run_config(run_config)
+    lines = ["{"]
+    for section in RUN_CONFIG_SECTIONS:
+        lines.append(f"    {section!r}: {{")
+        for key in sorted(merged[section]):
+            lines.append(f"        {key!r}: {merged[section][key]!r},")
+        lines.append("    },")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+@contextlib.contextmanager
+def _run_config_neutral(benchmark: taaf.benchmark.Benchmark, run_config: dict[str, Any]):
+    """Temporarily strip per-run state from ``benchmark`` so the pickled bundle
+    does not depend on it.
+
+    ``job_dir`` is the launcher's local path, overwritten with /kaggle/working by
+    the notebook; it is what made every bundle hash unique. Each
+    ``run_config["solver"]`` attribute is reset to its dataclass default -- the
+    notebook re-applies the real value from ``RUN_CONFIG`` after unpickling.
+    """
+    solver = benchmark.solver
+    overrides = run_config.get("solver") or {}
+    defaults: dict[str, Any] = {}
+    if overrides:
+        if not dataclasses.is_dataclass(solver):
+            raise TypeError("run_config['solver'] requires a dataclass solver.")
+        for f in dataclasses.fields(solver):
+            if f.name not in overrides:
+                continue
+            if f.default is not dataclasses.MISSING:
+                defaults[f.name] = f.default
+            elif f.default_factory is not dataclasses.MISSING:
+                defaults[f.name] = f.default_factory()
+        missing = sorted(set(overrides) - set(defaults) - {f.name for f in dataclasses.fields(solver)})
+        if missing:
+            raise AttributeError(f"run_config['solver'] names attributes {type(solver).__name__} lacks: {missing}")
+    saved = {name: getattr(solver, name) for name in defaults}
+    saved_job_dir = benchmark.job_dir
+    try:
+        for name, value in defaults.items():
+            setattr(solver, name, value)
+        benchmark.job_dir = None
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(solver, name, value)
+        benchmark.job_dir = saved_job_dir
 
 
 def _bundle_content_hash(bundle_dir: Path) -> str:
@@ -552,10 +655,10 @@ def _write_source_dataset_bundle(
     benchmark: taaf.benchmark.Benchmark,
     target: KaggleTarget,
     bundle_dir: Path,
-    preamble: str,
     setup_commands: list[str],
     teardown_commands: list[str],
     make_share_version: bool = False,
+    run_config: dict[str, Any] | None = None,
 ) -> None:
     notebook_name = SHARE_NOTEBOOK_NAME if make_share_version else NOTEBOOK_NAME
     shutil.rmtree(bundle_dir, ignore_errors=True)
@@ -565,8 +668,19 @@ def _write_source_dataset_bundle(
         extra_repos=target.extra_source_repos,
         exclude_repos=_SHARE_EXCLUDE_REPOS if make_share_version else None,
     )
-    taaf.support.atomic_pickle_dump(benchmark, bundle_dir / "benchmark_initial.pkl")
-    taaf.support.atomic_pickle_dump(target, bundle_dir / "deploy_target.pkl")
+    with _run_config_neutral(benchmark, run_config or {}):
+        taaf.support.atomic_pickle_dump(benchmark, bundle_dir / "benchmark_initial.pkl")
+        # Preamble from the neutralised benchmark too, or its solver repr would
+        # re-introduce the per-run values the pickle just shed.
+        preamble = taaf.deploy.format_preamble(benchmark)
+    # The notebook reads RUN_CONFIG from its own source, never from the pickled
+    # target; keep the copy in the bundle empty so the bundle stays config-neutral.
+    saved_run_config = target.run_config
+    target.run_config = {}
+    try:
+        taaf.support.atomic_pickle_dump(target, bundle_dir / "deploy_target.pkl")
+    finally:
+        target.run_config = saved_run_config
     (bundle_dir / "preamble.txt").write_text(preamble, encoding="utf-8")
     # Bundled so the runner can drop it into /kaggle/working before run():
     # the worker can't regenerate git status (no .git / dist-info there), and
@@ -624,6 +738,7 @@ def _write_kernel_bundle(
     accelerator: str | None,
     run_as_submission: bool,
     make_share_version: bool = False,
+    run_config: dict[str, Any] | None = None,
 ) -> None:
     shutil.rmtree(bundle_dir, ignore_errors=True)
     bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -636,6 +751,7 @@ def _write_kernel_bundle(
             kernel_sources=kernel_sources,
             enable_gpu=enable_gpu,
             template=template,
+            run_config=run_config,
         ),
         encoding="utf-8",
     )
@@ -666,9 +782,11 @@ def _render_kaggle_notebook(
     kernel_sources: Iterable[str] = (),
     enable_gpu: bool = False,
     template: Path = _NOTEBOOK_TEMPLATE,
+    run_config: dict[str, Any] | None = None,
 ) -> str:
     notebook = cast(dict[str, Any], json.loads(template.read_text(encoding="utf-8")))
     replacements = {
+        "__TAAF_RUN_CONFIG__": _render_run_config_literal(run_config or {}),
         "__TAAF_RUN_AS_SUBMISSION__": "True" if run_as_submission else "False",
         "__TAAF_ENABLE_GPU__": "True" if enable_gpu else "False",
         "__TAAF_COMPETITION_WHEELHOUSE__": json.dumps(COMPETITION_WHEELHOUSE),
@@ -692,7 +810,14 @@ def _render_kaggle_notebook(
         source = cell.get("source")
         if isinstance(source, list):
             source_lines = cast(list[object], source)
-            cell["source"] = [_render_notebook_line(str(line), replacements, strip_noqa) for line in source_lines]
+            # A multi-line replacement (RUN_CONFIG) must become several source
+            # entries, or the cell holds one embedded-newline string and every
+            # notebook diff renders it as a single changed line.
+            cell["source"] = [
+                piece
+                for line in source_lines
+                for piece in _render_notebook_line(str(line), replacements, strip_noqa).splitlines(keepends=True)
+            ]
         elif isinstance(source, str):
             cell["source"] = _render_notebook_line(source, replacements, strip_noqa)
     return json.dumps(notebook, indent=1, ensure_ascii=True) + "\n"
@@ -873,14 +998,15 @@ def package_for_local_debug(
         target.source_dataset_ref = normalize_dataset_ref(target.dataset_ref)
     elif not target.source_dataset_ref:
         target.source_dataset_ref = "local/taaf-kaggle-source"
+    target.run_config = merge_run_config(_solver_run_config(benchmark.solver), target.run_config)
     _write_source_dataset_bundle(
         benchmark=benchmark,
         target=target,
         bundle_dir=output_dir,
-        preamble=taaf.deploy.format_preamble(benchmark),
         setup_commands=list(target.setup_commands),
         teardown_commands=list(target.teardown_commands),
         make_share_version=target.make_share_version,
+        run_config=target.run_config,
     )
     return output_dir
 
@@ -906,6 +1032,7 @@ def run_source_bundle_locally(
             dataset_sources=_target_declared_dataset_sources(target) if target is not None else (),
             kernel_sources=_target_declared_kernel_sources(target) if target is not None else (),
             enable_gpu=False,
+            run_config=target.run_config if target is not None else None,
         )
     )
     code = "\n\n".join("".join(cell.get("source", [])) for cell in notebook["cells"] if cell.get("cell_type") == "code")

@@ -45,6 +45,7 @@ from inference.framework.kaggle import (
     DEFAULT_WHEELHOUSE_STAMP_TEXT,
     DuckKaggleVllmConfig,
     duck_kaggle_dataset_sources,
+    duck_kaggle_run_env,
     duck_kaggle_setup_command,
     duck_kaggle_teardown_command,
 )
@@ -854,6 +855,27 @@ class HarnessSolver(Solver):
         if not self.kaggle_enable_vllm:
             return []
         return duck_kaggle_dataset_sources(self._kaggle_vllm_config())
+
+    @property
+    def kaggle_run_config(self) -> dict[str, Any]:
+        """Per-run settings rendered into the Kaggle notebook's RUN_CONFIG cell.
+
+        ``solver`` attributes are reset to their defaults in the pickled bundle and
+        re-applied by the notebook; ``env`` is exported before the setup script runs.
+        Together they make the source dataset independent of the run configuration.
+        """
+        config: dict[str, Any] = {
+            "solver": {
+                "concurrency": int(self.concurrency),
+                "max_runtime_s_per_game": self.max_runtime_s_per_game,
+                "max_actions_per_game": self.max_actions_per_game,
+                "analyzer_timeout": self.analyzer_timeout,
+            },
+            "env": {},
+        }
+        if self.kaggle_enable_vllm:
+            config["env"] = duck_kaggle_run_env(self._kaggle_vllm_config())
+        return config
 
     @property
     def kaggle_setup_commands(self) -> list[str]:

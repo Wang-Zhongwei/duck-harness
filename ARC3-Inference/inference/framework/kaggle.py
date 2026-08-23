@@ -134,6 +134,87 @@ def duck_kaggle_dataset_sources(
     return [_runtime_dataset_source(cfg), _model_dataset_source(cfg)]
 
 
+def _validated_analyzer_provider() -> str:
+    # Base URL / model are pinned to the local server, so reject a provider that
+    # disagrees (e.g. openrouter): build_chat_payload only emits top_k, seed and
+    # chat_template_kwargs on the "vllm" branch, and both vLLM and SGLang accept all
+    # three. Anything else silently drops them -- no error, just worse play.
+    analyzer_provider = os.environ.get("LOCAL_ANALYZER_PROVIDER", "vllm")
+    if normalize_provider(analyzer_provider) != "vllm":
+        raise ValueError(
+            f"kaggle-duck talks to a local OpenAI-compatible server (vLLM or SGLang), so "
+            f"LOCAL_ANALYZER_PROVIDER must normalize to 'vllm', got {analyzer_provider!r}."
+        )
+    return analyzer_provider
+
+
+# Every per-run knob the setup script reads from its environment at runtime, with the
+# fallback the script applies when the variable is unset or empty. The launcher resolves
+# each from its own (Makefile-exported) environment into RUN_CONFIG["env"], which the
+# notebook exports before running setup_commands.json -- so the rendered script is the
+# same bytes for every configuration, and the notebook shows the effective values.
+_RUN_ENV_DEFAULTS: tuple[tuple[str, str], ...] = (
+    # Also read at render time by duck_kaggle_dataset_sources (the SGLang blob must be
+    # attached); hand-editing it in the notebook alone cannot swap engines.
+    ("KAGGLE_SERVER_BACKEND", "vllm"),
+    ("KAGGLE_MAX_MODEL_LEN", ""),  # "" -> the rendered DuckKaggleVllmConfig.max_model_len
+    ("LOCAL_ANALYZER_CONTEXT_WINDOW", ""),  # "" -> KAGGLE_MAX_MODEL_LEN
+    ("LOCAL_ANALYZER_PROVIDER", "vllm"),
+    ("LOCAL_ANALYZER_APP_NAME", "ARC3 Kaggle Harness"),
+    ("LOCAL_ANALYZER_MAX_OUTPUT", "0"),
+    ("LOCAL_ANALYZER_CONTEXT_STEPS", "4"),
+    ("LOCAL_ANALYZER_TOOL_STEPS", "0"),
+    ("LOCAL_ANALYZER_TOOL_TIMEOUT", "30"),
+    ("LOCAL_ANALYZER_TOOL_OUTPUT_TOKENS", "1024"),
+    ("LOCAL_ANALYZER_YIELD_SECONDS", "60"),
+    ("LOCAL_ANALYZER_TEMPERATURE", "0.6"),
+    ("LOCAL_ANALYZER_TOP_P", "0.95"),
+    ("LOCAL_ANALYZER_TOP_K", "20"),
+    ("LOCAL_ANALYZER_ENABLE_THINKING", "1"),
+    ("LOCAL_ANALYZER_MODEL_UPDATE_MODE", "assistant"),
+    ("MULTIMODAL_CONTEXT", "current_grid"),
+    ("MULTIMODAL_UPSCALE", "4"),
+    ("SERVER_SPECULATIVE_CONFIG", ""),
+    ("KAGGLE_ATTENTION_BACKEND", ""),
+    ("KAGGLE_KV_CACHE_DTYPE", ""),
+    ("KAGGLE_SPEC_ALGORITHM", ""),
+    ("KAGGLE_SPEC_NUM_STEPS", ""),
+    ("KAGGLE_SPEC_EAGLE_TOPK", ""),
+    ("KAGGLE_SPEC_NUM_DRAFT_TOKENS", ""),
+    ("KAGGLE_MAX_RUNNING_REQUESTS", ""),
+    ("KAGGLE_LIMIT_MM_DATA_PER_REQUEST", ""),
+    ("KAGGLE_SMOKE_MAX_TOKENS", "2048"),
+    ("KAGGLE_UNBOUNDED_SMOKE_TIMEOUT", "300"),
+    ("ANALYZER_TIMEOUT", "400"),
+    ("KAGGLE_SERVER_START_TIMEOUT", "1800"),
+    ("SERVER_TOOL_CALL_PARSER", "qwen3_coder"),
+    ("SERVER_REASONING_PARSER", "qwen3"),
+    ("SERVER_DEFAULT_CHAT_TEMPLATE_KWARGS", '{"preserve_thinking": true, "reasoning_effort": "xhigh"}'),
+)
+
+RUN_ENV_NAMES: tuple[str, ...] = tuple(name for name, _default in _RUN_ENV_DEFAULTS)
+
+
+def duck_kaggle_run_env(config: DuckKaggleVllmConfig | None = None) -> dict[str, str]:
+    """The launcher's effective value for every runtime knob in ``_RUN_ENV_DEFAULTS``.
+
+    Rendered into the notebook's ``RUN_CONFIG["env"]`` (via
+    ``HarnessSolver.kaggle_run_config``). Values are resolved the way the setup script
+    resolves them, so what the notebook shows is what runs.
+    """
+    cfg = config or DuckKaggleVllmConfig()
+    _validated_analyzer_provider()
+    env: dict[str, str] = {}
+    for name, default in _RUN_ENV_DEFAULTS:
+        env[name] = _kaggle_env(name, default)
+    env["KAGGLE_SERVER_BACKEND"] = env["KAGGLE_SERVER_BACKEND"].lower()
+    env["KAGGLE_MAX_MODEL_LEN"] = str(int(env["KAGGLE_MAX_MODEL_LEN"] or cfg.max_model_len))
+    env["LOCAL_ANALYZER_CONTEXT_WINDOW"] = str(
+        int(env["LOCAL_ANALYZER_CONTEXT_WINDOW"] or env["KAGGLE_MAX_MODEL_LEN"])
+    )
+    return env
+
+
 def duck_kaggle_setup_command(config: DuckKaggleVllmConfig | None = None) -> str:
     cfg = config or DuckKaggleVllmConfig()
     # These two must agree with duck_kaggle_dataset_sources(), which decides what is
@@ -147,16 +228,7 @@ def duck_kaggle_setup_command(config: DuckKaggleVllmConfig | None = None) -> str
         option_name="model_dataset_source",
     )
     served_model_name = _served_model_name(cfg)
-    # Base URL / model are pinned to the local server below, so reject a provider that
-    # disagrees (e.g. openrouter): build_chat_payload only emits top_k, seed and
-    # chat_template_kwargs on the "vllm" branch, and both vLLM and SGLang accept all
-    # three. Anything else silently drops them — no error, just worse play.
-    analyzer_provider = os.environ.get("LOCAL_ANALYZER_PROVIDER", "vllm")
-    if normalize_provider(analyzer_provider) != "vllm":
-        raise ValueError(
-            f"kaggle-duck talks to a local OpenAI-compatible server (vLLM or SGLang), so "
-            f"LOCAL_ANALYZER_PROVIDER must normalize to 'vllm', got {analyzer_provider!r}."
-        )
+    _validated_analyzer_provider()
     replacements = {
         "__WHEELHOUSE_OWNER__": repr(wheelhouse_owner),
         "__WHEELHOUSE_SLUG__": repr(wheelhouse_slug),
@@ -164,81 +236,11 @@ def duck_kaggle_setup_command(config: DuckKaggleVllmConfig | None = None) -> str
         "__MODEL_SLUG__": repr(model_slug),
         "__SERVED_MODEL_NAME__": repr(served_model_name),
         "__VLLM_PORT__": repr(int(cfg.vllm_port)),
-        # kaggle.max_model_len, exported by the Makefile. The dataclass default is what the
-        # notebook ran until 2026-08-22 regardless of server.max_model_len.
-        "__VLLM_MAX_MODEL_LEN__": repr(int(_kaggle_env("KAGGLE_MAX_MODEL_LEN", str(cfg.max_model_len)))),
-        # The launcher's Makefile exports LOCAL_ANALYZER_CONTEXT_WINDOW from
-        # JSON shared.context_window (or analyzer.context_window). Embed it
-        # here so the agent's prompt budget on Kaggle is the JSON value, not
-        # vllm's max-model-len. Falls back to max_model_len if unset.
-        "__ANALYZER_CONTEXT_WINDOW__": repr(
-            int(os.environ.get("LOCAL_ANALYZER_CONTEXT_WINDOW") or _kaggle_env("KAGGLE_MAX_MODEL_LEN", str(cfg.max_model_len)))
-        ),
-        # Remaining JSON-driven analyzer/multimodal config: the launcher's
-        # Makefile exports each from inference.json; embed the launcher value
-        # so the rendered setup_env on Kaggle reflects JSON edits. Fallback
-        # equals the historical hardcoded literal so direct kaggle.py callers
-        # outside Make are unaffected.
-        "__LOCAL_ANALYZER_PROVIDER__": repr(analyzer_provider),
-        "__LOCAL_ANALYZER_APP_NAME__": repr(os.environ.get("LOCAL_ANALYZER_APP_NAME", "ARC3 Kaggle Harness")),
-        "__LOCAL_ANALYZER_MAX_OUTPUT__": repr(os.environ.get("LOCAL_ANALYZER_MAX_OUTPUT", "0")),
-        "__LOCAL_ANALYZER_CONTEXT_STEPS__": repr(os.environ.get("LOCAL_ANALYZER_CONTEXT_STEPS", "4")),
-        "__LOCAL_ANALYZER_TOOL_STEPS__": repr(os.environ.get("LOCAL_ANALYZER_TOOL_STEPS", "0")),
-        "__LOCAL_ANALYZER_TOOL_TIMEOUT__": repr(os.environ.get("LOCAL_ANALYZER_TOOL_TIMEOUT", "30")),
-        "__LOCAL_ANALYZER_TOOL_OUTPUT_TOKENS__": repr(os.environ.get("LOCAL_ANALYZER_TOOL_OUTPUT_TOKENS", "1024")),
-        "__LOCAL_ANALYZER_YIELD_SECONDS__": repr(os.environ.get("LOCAL_ANALYZER_YIELD_SECONDS", "60")),
-        "__LOCAL_ANALYZER_TEMPERATURE__": repr(os.environ.get("LOCAL_ANALYZER_TEMPERATURE", "0.6")),
-        "__LOCAL_ANALYZER_TOP_P__": repr(os.environ.get("LOCAL_ANALYZER_TOP_P", "0.95")),
-        "__LOCAL_ANALYZER_TOP_K__": repr(os.environ.get("LOCAL_ANALYZER_TOP_K", "20")),
-        "__LOCAL_ANALYZER_ENABLE_THINKING__": repr(os.environ.get("LOCAL_ANALYZER_ENABLE_THINKING", "1")),
-        "__LOCAL_ANALYZER_MODEL_UPDATE_MODE__": repr(os.environ.get("LOCAL_ANALYZER_MODEL_UPDATE_MODE", "assistant")),
-        "__MULTIMODAL_CONTEXT__": repr(os.environ.get("MULTIMODAL_CONTEXT", "current_grid")),
-        "__MULTIMODAL_UPSCALE__": repr(os.environ.get("MULTIMODAL_UPSCALE", "4")),
+        # Fallback only: the effective value arrives at runtime as KAGGLE_MAX_MODEL_LEN
+        # from the notebook's RUN_CONFIG cell (see duck_kaggle_run_env).
+        "__VLLM_MAX_MODEL_LEN__": repr(int(cfg.max_model_len)),
         "__VLLM_TENSOR_PARALLEL_SIZE__": repr(int(cfg.tensor_parallel_size)),
-        # JSON server.speculative_config, exported by the launcher's Makefile.
-        # Empty (the default) omits --speculative-config entirely.
-        "__VLLM_SPECULATIVE_CONFIG__": repr(os.environ.get("SERVER_SPECULATIVE_CONFIG", "")),
         "__WHEELHOUSE_STAMP_TEXT__": repr(cfg.wheelhouse_stamp_text),
-        # Engine selection. "vllm" (default) renders the historical path
-        # byte-identically; "sglang" swaps in the blob-mounted SGLang server.
-        "__SERVER_BACKEND__": repr(_kaggle_backend()),
-        # Server knobs previously unreachable from JSON: configs/inference.json
-        # set "kv_cache_dtype" but nothing read it (a dead key on every run).
-        # NOTE: one key, two spellings. vLLM wants TRITON_ATTN, SGLang wants triton, and
-        # each rejects the other's at argument parsing -- loudly, at launch, which is why
-        # this is left as a straight pass-through rather than a translation that could
-        # mask a genuine typo. Flip kaggle.attention_backend when you flip kaggle.backend.
-        "__ATTENTION_BACKEND__": repr(_kaggle_env("KAGGLE_ATTENTION_BACKEND")),
-        "__KV_CACHE_DTYPE__": repr(_kaggle_env("KAGGLE_KV_CACHE_DTYPE")),
-        # vLLM takes --speculative-config as one JSON blob; SGLang wants four flags.
-        "__SPEC_ALGORITHM__": repr(_kaggle_env("KAGGLE_SPEC_ALGORITHM")),
-        "__SPEC_NUM_STEPS__": repr(_kaggle_env("KAGGLE_SPEC_NUM_STEPS")),
-        "__SPEC_EAGLE_TOPK__": repr(_kaggle_env("KAGGLE_SPEC_EAGLE_TOPK")),
-        "__SPEC_NUM_DRAFT_TOKENS__": repr(_kaggle_env("KAGGLE_SPEC_NUM_DRAFT_TOKENS")),
-        "__MAX_RUNNING_REQUESTS__": repr(_kaggle_env("KAGGLE_MAX_RUNNING_REQUESTS")),
-        "__LIMIT_MM_PER_REQUEST__": repr(_kaggle_env("KAGGLE_LIMIT_MM_DATA_PER_REQUEST")),
-        # The smoke test must sample exactly like the agent: greedy decoding sends this
-        # model into a repetition loop that never returns.
-        "__SMOKE_TEMPERATURE__": repr(float(os.environ.get("LOCAL_ANALYZER_TEMPERATURE") or 1.0)),
-        "__SMOKE_TOP_P__": repr(float(os.environ.get("LOCAL_ANALYZER_TOP_P") or 0.95)),
-        "__SMOKE_TOP_K__": repr(int(os.environ.get("LOCAL_ANALYZER_TOP_K") or 20)),
-        "__SMOKE_MAX_TOKENS__": repr(int(_kaggle_env("KAGGLE_SMOKE_MAX_TOKENS", "2048"))),
-        # Must be <= the analyzer timeout: a generation slower than that is already fatal
-        # in production, so there is nothing to be gained by waiting longer here.
-        "__UNBOUNDED_SMOKE_TIMEOUT__": repr(int(_kaggle_env("KAGGLE_UNBOUNDED_SMOKE_TIMEOUT", "300"))),
-        "__ANALYZER_TIMEOUT_HINT__": repr(os.environ.get("ANALYZER_TIMEOUT", "400")),
-        "__SERVER_START_TIMEOUT__": repr(int(_kaggle_env("KAGGLE_SERVER_START_TIMEOUT", "1800"))),
-        # The vLLM argv hardcodes these three; SGLang needs them passed explicitly or the
-        # agent silently gets no tool calls and no reasoning_content. Same values, and the
-        # fallbacks matter because an unset config key exports as "" rather than absent.
-        "__TOOL_CALL_PARSER__": repr(_kaggle_env("SERVER_TOOL_CALL_PARSER", "qwen3_coder")),
-        "__REASONING_PARSER__": repr(_kaggle_env("SERVER_REASONING_PARSER", "qwen3")),
-        "__DEFAULT_CHAT_TEMPLATE_KWARGS__": repr(
-            _kaggle_env(
-                "SERVER_DEFAULT_CHAT_TEMPLATE_KWARGS",
-                '{"preserve_thinking": true, "reasoning_effort": "xhigh"}',
-            )
-        ),
         "__SMOKE_TEST_PNG_B64__": repr(_SMOKE_TEST_PNG_B64),
     }
     script = _DUCK_VLLM_SETUP_SCRIPT
@@ -292,12 +294,20 @@ SERVED_MODEL_NAME = __SERVED_MODEL_NAME__
 VLLM_HOST = '127.0.0.1'
 VLLM_PORT = __VLLM_PORT__
 VLLM_BASE_URL = f'http://{VLLM_HOST}:{VLLM_PORT}/v1'
-VLLM_MAX_MODEL_LEN = __VLLM_MAX_MODEL_LEN__
-ANALYZER_CONTEXT_WINDOW = __ANALYZER_CONTEXT_WINDOW__
+
+
+def _env(name, default=''):
+    # Per-run knobs arrive from the notebook's RUN_CONFIG["env"] cell (exported before
+    # this script runs); an empty export counts as unset, same as the launcher side.
+    return (str(os.environ.get(name, '') or '').strip()) or default
+
+
+VLLM_MAX_MODEL_LEN = int(_env('KAGGLE_MAX_MODEL_LEN') or __VLLM_MAX_MODEL_LEN__)
+ANALYZER_CONTEXT_WINDOW = int(_env('LOCAL_ANALYZER_CONTEXT_WINDOW') or VLLM_MAX_MODEL_LEN)
 VLLM_TENSOR_PARALLEL_SIZE = __VLLM_TENSOR_PARALLEL_SIZE__
 # MTP self-speculative decoding, mirrored from JSON server.speculative_config.
 # Empty leaves it off (vLLM default), matching the local/slurm path in the Makefile.
-VLLM_SPECULATIVE_CONFIG = __VLLM_SPECULATIVE_CONFIG__
+VLLM_SPECULATIVE_CONFIG = _env('SERVER_SPECULATIVE_CONFIG')
 WORKING_DIR = Path(os.environ['TAAF_KAGGLE_WORKING_DIR'])
 # NOT under WORKING_DIR. The tree expands to ~10 GB of torch + CUDA, which counts
 # against the 20 GiB notebook-output cap and ships in `kaggle kernels output` -- that is
@@ -309,25 +319,39 @@ VLLM_SERVER_PID = WORKING_DIR / 'vllm-openai-server.pid'
 INSTALL_STAMP = SITE_PACKAGES / f'.{WHEELHOUSE_SLUG}'
 STAMP_TEXT = __WHEELHOUSE_STAMP_TEXT__
 
-SERVER_BACKEND = __SERVER_BACKEND__
-ATTENTION_BACKEND = __ATTENTION_BACKEND__
-KV_CACHE_DTYPE = __KV_CACHE_DTYPE__
-SPEC_ALGORITHM = __SPEC_ALGORITHM__
-SPEC_NUM_STEPS = __SPEC_NUM_STEPS__
-SPEC_EAGLE_TOPK = __SPEC_EAGLE_TOPK__
-SPEC_NUM_DRAFT_TOKENS = __SPEC_NUM_DRAFT_TOKENS__
-MAX_RUNNING_REQUESTS = __MAX_RUNNING_REQUESTS__
-LIMIT_MM_PER_REQUEST = __LIMIT_MM_PER_REQUEST__
-SMOKE_TEMPERATURE = __SMOKE_TEMPERATURE__
-SMOKE_TOP_P = __SMOKE_TOP_P__
-SMOKE_TOP_K = __SMOKE_TOP_K__
-SMOKE_MAX_TOKENS = __SMOKE_MAX_TOKENS__
-UNBOUNDED_SMOKE_TIMEOUT = __UNBOUNDED_SMOKE_TIMEOUT__
-ANALYZER_TIMEOUT_HINT = __ANALYZER_TIMEOUT_HINT__
-SERVER_START_TIMEOUT = __SERVER_START_TIMEOUT__
-TOOL_CALL_PARSER = __TOOL_CALL_PARSER__
-REASONING_PARSER = __REASONING_PARSER__
-DEFAULT_CHAT_TEMPLATE_KWARGS = __DEFAULT_CHAT_TEMPLATE_KWARGS__
+# Engine selection. "vllm" is the historical path; "sglang" swaps in the blob-mounted
+# SGLang server. One key, two spellings for the attention backend: vLLM wants
+# TRITON_ATTN, SGLang wants triton, and each rejects the other's at argument parsing --
+# loudly, at launch -- so these are straight pass-throughs, not translations.
+SERVER_BACKEND = _env('KAGGLE_SERVER_BACKEND', 'vllm').lower()
+ATTENTION_BACKEND = _env('KAGGLE_ATTENTION_BACKEND')
+KV_CACHE_DTYPE = _env('KAGGLE_KV_CACHE_DTYPE')
+# vLLM takes --speculative-config as one JSON blob; SGLang wants four flags.
+SPEC_ALGORITHM = _env('KAGGLE_SPEC_ALGORITHM')
+SPEC_NUM_STEPS = _env('KAGGLE_SPEC_NUM_STEPS')
+SPEC_EAGLE_TOPK = _env('KAGGLE_SPEC_EAGLE_TOPK')
+SPEC_NUM_DRAFT_TOKENS = _env('KAGGLE_SPEC_NUM_DRAFT_TOKENS')
+MAX_RUNNING_REQUESTS = _env('KAGGLE_MAX_RUNNING_REQUESTS')
+LIMIT_MM_PER_REQUEST = _env('KAGGLE_LIMIT_MM_DATA_PER_REQUEST')
+# The smoke test must sample exactly like the agent: greedy decoding sends this model
+# into a repetition loop that never returns.
+SMOKE_TEMPERATURE = float(_env('LOCAL_ANALYZER_TEMPERATURE') or 1.0)
+SMOKE_TOP_P = float(_env('LOCAL_ANALYZER_TOP_P') or 0.95)
+SMOKE_TOP_K = int(_env('LOCAL_ANALYZER_TOP_K') or 20)
+SMOKE_MAX_TOKENS = int(_env('KAGGLE_SMOKE_MAX_TOKENS', '2048'))
+# Must be <= the analyzer timeout: a generation slower than that is already fatal in
+# production, so there is nothing to be gained by waiting longer here.
+UNBOUNDED_SMOKE_TIMEOUT = int(_env('KAGGLE_UNBOUNDED_SMOKE_TIMEOUT', '300'))
+ANALYZER_TIMEOUT_HINT = _env('ANALYZER_TIMEOUT', '400')
+SERVER_START_TIMEOUT = int(_env('KAGGLE_SERVER_START_TIMEOUT', '1800'))
+# The vLLM argv hardcodes these three; SGLang needs them passed explicitly or the agent
+# silently gets no tool calls and no reasoning_content.
+TOOL_CALL_PARSER = _env('SERVER_TOOL_CALL_PARSER', 'qwen3_coder')
+REASONING_PARSER = _env('SERVER_REASONING_PARSER', 'qwen3')
+DEFAULT_CHAT_TEMPLATE_KWARGS = _env(
+    'SERVER_DEFAULT_CHAT_TEMPLATE_KWARGS',
+    '{"preserve_thinking": true, "reasoning_effort": "xhigh"}',
+)
 # The blob untars to /tmp and NOT to WORKING_DIR. Two independent reasons: everything
 # under /kaggle/working is committed as notebook output against a 20 GiB cap, and the
 # CUDA-layout repair below mutates the tree, which /kaggle/input cannot do (read-only).
@@ -1172,25 +1196,25 @@ run_api_smoke_test()
 setup_env = {
     'LOCAL_ANALYZER_BASE_URL': VLLM_BASE_URL,
     'OPENAI_BASE_URL': VLLM_BASE_URL,
-    'LOCAL_ANALYZER_PROVIDER': __LOCAL_ANALYZER_PROVIDER__,
-    'OPENAI_PROVIDER': __LOCAL_ANALYZER_PROVIDER__,
+    'LOCAL_ANALYZER_PROVIDER': _env('LOCAL_ANALYZER_PROVIDER', 'vllm'),
+    'OPENAI_PROVIDER': _env('LOCAL_ANALYZER_PROVIDER', 'vllm'),
     'LOCAL_ANALYZER_MODEL_ID': SERVED_MODEL_NAME,
     'INFERENCE_ANALYZER_MODEL': SERVED_MODEL_NAME,
-    'LOCAL_ANALYZER_APP_NAME': __LOCAL_ANALYZER_APP_NAME__,
+    'LOCAL_ANALYZER_APP_NAME': _env('LOCAL_ANALYZER_APP_NAME', 'ARC3 Kaggle Harness'),
     'LOCAL_ANALYZER_CONTEXT_WINDOW': str(ANALYZER_CONTEXT_WINDOW),
-    'LOCAL_ANALYZER_MAX_OUTPUT': __LOCAL_ANALYZER_MAX_OUTPUT__,
-    'LOCAL_ANALYZER_CONTEXT_STEPS': __LOCAL_ANALYZER_CONTEXT_STEPS__,
-    'LOCAL_ANALYZER_TOOL_STEPS': __LOCAL_ANALYZER_TOOL_STEPS__,
-    'LOCAL_ANALYZER_TOOL_TIMEOUT': __LOCAL_ANALYZER_TOOL_TIMEOUT__,
-    'LOCAL_ANALYZER_TOOL_OUTPUT_TOKENS': __LOCAL_ANALYZER_TOOL_OUTPUT_TOKENS__,
-    'LOCAL_ANALYZER_YIELD_SECONDS': __LOCAL_ANALYZER_YIELD_SECONDS__,
-    'LOCAL_ANALYZER_TEMPERATURE': __LOCAL_ANALYZER_TEMPERATURE__,
-    'LOCAL_ANALYZER_TOP_P': __LOCAL_ANALYZER_TOP_P__,
-    'LOCAL_ANALYZER_TOP_K': __LOCAL_ANALYZER_TOP_K__,
-    'LOCAL_ANALYZER_ENABLE_THINKING': __LOCAL_ANALYZER_ENABLE_THINKING__,
-    'LOCAL_ANALYZER_MODEL_UPDATE_MODE': __LOCAL_ANALYZER_MODEL_UPDATE_MODE__,
-    'MULTIMODAL_CONTEXT': __MULTIMODAL_CONTEXT__,
-    'MULTIMODAL_UPSCALE': __MULTIMODAL_UPSCALE__,
+    'LOCAL_ANALYZER_MAX_OUTPUT': _env('LOCAL_ANALYZER_MAX_OUTPUT', '0'),
+    'LOCAL_ANALYZER_CONTEXT_STEPS': _env('LOCAL_ANALYZER_CONTEXT_STEPS', '4'),
+    'LOCAL_ANALYZER_TOOL_STEPS': _env('LOCAL_ANALYZER_TOOL_STEPS', '0'),
+    'LOCAL_ANALYZER_TOOL_TIMEOUT': _env('LOCAL_ANALYZER_TOOL_TIMEOUT', '30'),
+    'LOCAL_ANALYZER_TOOL_OUTPUT_TOKENS': _env('LOCAL_ANALYZER_TOOL_OUTPUT_TOKENS', '1024'),
+    'LOCAL_ANALYZER_YIELD_SECONDS': _env('LOCAL_ANALYZER_YIELD_SECONDS', '60'),
+    'LOCAL_ANALYZER_TEMPERATURE': _env('LOCAL_ANALYZER_TEMPERATURE', '0.6'),
+    'LOCAL_ANALYZER_TOP_P': _env('LOCAL_ANALYZER_TOP_P', '0.95'),
+    'LOCAL_ANALYZER_TOP_K': _env('LOCAL_ANALYZER_TOP_K', '20'),
+    'LOCAL_ANALYZER_ENABLE_THINKING': _env('LOCAL_ANALYZER_ENABLE_THINKING', '1'),
+    'LOCAL_ANALYZER_MODEL_UPDATE_MODE': _env('LOCAL_ANALYZER_MODEL_UPDATE_MODE', 'assistant'),
+    'MULTIMODAL_CONTEXT': _env('MULTIMODAL_CONTEXT', 'current_grid'),
+    'MULTIMODAL_UPSCALE': _env('MULTIMODAL_UPSCALE', '4'),
 }
 if SERVER_BACKEND != 'sglang':
     # The notebook splices every PYTHONPATH entry into the HARNESS process's own sys.path,

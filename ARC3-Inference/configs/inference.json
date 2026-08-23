@@ -3,7 +3,7 @@
     "model_name": "Qwen/Qwen3.8-27B-FP8",
     "base_url": "http://127.0.0.1:1234/v1",
     "provider": "vllm",
-    "context_window": 65536
+    "context_window": 32768
   },
   "experiments": {
     "root_dir": "runs"
@@ -85,7 +85,7 @@
     "backend": "vllm",
     "attention_backend": "TRITON_ATTN",
     "kv_cache_dtype": "fp8_e4m3",
-    "max_model_len": 131072,
+    "max_model_len": 65536,
     "max_running_requests": 48,
     "spec_algorithm": "EAGLE",
     "spec_num_steps": 3,
@@ -97,8 +97,8 @@
     "served_model_name": "Qwen/Qwen3.8-27B-NVFP4",
     "limit_mm_data_per_request": "",
     "server_start_timeout": 1800,
-    "max_runtime_minutes": 132,
-    "concurrent_jobs": 28,
+    "max_runtime_minutes": 105.6,
+    "concurrent_jobs": 22,
     "analyzer_timeout": 360
   },
   "viewer": {
