@@ -345,6 +345,15 @@ When browsing a run root, the viewer defaults to the newest run dated on or
 after 2026-08-10 that contains viewer artifacts or an evaluation. The run selector uses the same
 Qwen 3.8-era filter. `VIEW_RUN_DIR` remains available as an explicit override.
 
+Hovering a game id on the home page (score matrix, game inspector, trace
+summary) or on the comparison page shows a thumbnail of the game's initial
+frame plus a link to the interactive play page at
+`https://arcprize.org/tasks/<game-id>`. Thumbnails are rendered on demand from
+the offline env files (`environment.environments_dir` in
+`configs/inference.json`, override with `VIEW_ENVIRONMENTS_DIR=...` or
+`--environments-dir`) and cached under `.cache/viewer-thumbnails/`; without the
+env files the popover still shows the play link.
+
 Override the port:
 
 ```bash

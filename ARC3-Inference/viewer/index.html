@@ -137,6 +137,12 @@
     .score-matrix th { position: sticky; top: 0; z-index: 2; background: #f8f2e8; color: var(--muted); font-size: 0.65rem; letter-spacing: 0.06em; text-transform: uppercase; }
     .score-matrix .game-col { position: sticky; left: 0; z-index: 1; min-width: 145px; max-width: 145px; text-align: left; background: #fffaf1; color: var(--ink); font-family: "IBM Plex Mono", "SFMono-Regular", monospace; font-weight: 700; }
     .score-matrix th.game-col { z-index: 3; background: #f8f2e8; }
+    .score-matrix td.game-col { cursor: pointer; }
+    .play-link { color: var(--accent); text-decoration: none; font-weight: 750; font-size: 0.74rem; white-space: nowrap; }
+    .play-link:hover { text-decoration: underline; }
+    .score-matrix td.game-col .play-link { margin-left: 6px; opacity: 0.55; }
+    .score-matrix td.game-col:hover .play-link { opacity: 1; }
+    .inspector-title .game-peek-target { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .matrix-cell { cursor: pointer; background: color-mix(in srgb, var(--accent) calc(var(--heat, 0) * 52%), #fff 48%); transition: box-shadow 100ms ease, transform 100ms ease; }
     .matrix-cell:hover { box-shadow: inset 0 0 0 2px var(--accent); transform: scale(1.02); }
     .matrix-cell.missing { color: #a6afb3; background: rgba(24, 36, 45, 0.025); cursor: default; }
@@ -767,6 +773,7 @@
     </div>
   </div>
 
+  <script src="/game-peek.js"></script>
   <script>
     const DEFAULT_ARC_PALETTE = [
       "rgb(255, 255, 255)", "rgb(204, 204, 204)", "rgb(153, 153, 153)", "rgb(102, 102, 102)",
@@ -824,6 +831,7 @@
     });
     matrixSortEl.addEventListener("change", renderResults);
     scoreMatrixEl.addEventListener("click", (event) => {
+      if (event.target.closest("a")) return;
       const target = event.target.closest("[data-result-game]");
       if (!target) return;
       selectedResultGame = target.dataset.resultGame;
@@ -1352,7 +1360,7 @@
           const alpha = (0.07 + heat * 0.4).toFixed(3);
           return `<td class="matrix-cell" style="background:rgba(197,93,31,${alpha})" data-result-game="${escapeHtml(row.gameId)}" data-result-trial="${escapeHtml(labels[index])}" title="${escapeHtml(labels[index])}: ${escapeHtml(metricNumber(value))}">${escapeHtml(metricNumber(value))}</td>`;
         }).join("");
-        return `<tr><td class="game-col" data-result-game="${escapeHtml(row.gameId)}">${escapeHtml(row.gameId)}</td>${cells}<td class="mean-cell">${escapeHtml(metricNumber(row.average))}</td></tr>`;
+        return `<tr><td class="game-col" data-result-game="${escapeHtml(row.gameId)}" data-game-peek="${escapeHtml(row.gameId)}">${escapeHtml(row.gameId)}<a class="play-link" href="${escapeHtml(gamePlayUrl(row.gameId))}" target="_blank" rel="noopener" title="Play ${escapeHtml(row.gameId)} on arcprize.org" aria-label="Play ${escapeHtml(row.gameId)} on arcprize.org">↗</a></td>${cells}<td class="mean-cell">${escapeHtml(metricNumber(row.average))}</td></tr>`;
       }).join("");
       scoreMatrixEl.innerHTML = `<table class="score-matrix"><thead><tr><th class="game-col">Game</th>${header}<th>Mean</th></tr></thead><tbody>${body}</tbody></table>`;
 
@@ -1383,7 +1391,7 @@
         return `<div class="trial-row"><span>${escapeHtml(shortTrialLabel(label))}</span><div class="trial-track"><div class="trial-bar" style="width:${width}%"></div></div><span class="trial-value">${escapeHtml(metricNumber(value))}</span></div>`;
       }).join("");
       gameInspectorEl.innerHTML = `
-        <div class="inspector-title"><div><select data-result-game-select aria-label="Game for pass details">${gameOptions}</select><div class="score-kpi-note">${escapeHtml(resultMetricDefinitions[matrixMetric].label)} by pass</div></div><button class="trace-link" data-open-game="${escapeHtml(gameId)}">Open trace →</button></div>
+        <div class="inspector-title"><div><div class="game-peek-target"><select data-result-game-select aria-label="Game for pass details">${gameOptions}</select><a class="play-link" data-game-peek="${escapeHtml(gameId)}" href="${escapeHtml(gamePlayUrl(gameId))}" target="_blank" rel="noopener">Play ↗</a></div><div class="score-kpi-note">${escapeHtml(resultMetricDefinitions[matrixMetric].label)} by pass</div></div><button class="trace-link" data-open-game="${escapeHtml(gameId)}">Open trace →</button></div>
         <div class="inspector-stats">
           <div class="inspector-stat"><span>${resultDataset()?.provisional ? "Snapshot mean" : "Mean score"}</span><strong>${escapeHtml(dashboardNumber(game.score ?? mean(scoreValues), 2))}</strong></div>
           <div class="inspector-stat"><span>Best / worst</span><strong>${escapeHtml(dashboardNumber(best, 2))} / ${escapeHtml(dashboardNumber(worst, 2))}</strong></div>
@@ -2040,7 +2048,7 @@
         <div class="summary-header">
           <div>
             <h2>${escapeHtml(step.title)}</h2>
-            <div class="summary-subtitle">${escapeHtml(stepType)} · ${escapeHtml(game.status || "UNKNOWN")}</div>
+            <div class="summary-subtitle">${escapeHtml(stepType)} · ${escapeHtml(game.status || "UNKNOWN")}${game.game_id ? ` · <span data-game-peek="${escapeHtml(game.game_id)}">${escapeHtml(game.game_id)}</span> <a class="play-link" href="${escapeHtml(gamePlayUrl(game.game_id))}" target="_blank" rel="noopener">Play ↗</a>` : ""}</div>
           </div>
           ${replay}
         </div>

@@ -279,6 +279,7 @@ VIEW_HOST ?= 127.0.0.1
 VIEW_PORT ?= $(shell $(CONFIG_VALUE) viewer.port 8011)
 VIEW_RUNS_DIR ?= $(RUNS_DIR)
 VIEW_RUN_DIR ?=
+VIEW_ENVIRONMENTS_DIR ?=
 
 export LOCAL_ANALYZER_BASE_URL
 export LOCAL_ANALYZER_PROVIDER
@@ -788,7 +789,8 @@ view:
 		--host "$(VIEW_HOST)" \
 		--port "$(VIEW_PORT)" \
 		--runs-dir "$(VIEW_RUNS_DIR)" \
-		$(if $(VIEW_RUN_DIR),--run-dir "$(VIEW_RUN_DIR)")
+		$(if $(VIEW_RUN_DIR),--run-dir "$(VIEW_RUN_DIR)") \
+		$(if $(VIEW_ENVIRONMENTS_DIR),--environments-dir "$(VIEW_ENVIRONMENTS_DIR)")
 
 trace: traces
 

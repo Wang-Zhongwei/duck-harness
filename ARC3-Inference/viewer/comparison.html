@@ -226,6 +226,7 @@
     <div id="dashboard" class="panel empty">Loading comparison registry...</div>
   </main>
 
+  <script src="/game-peek.js"></script>
   <script>
     let registry = null;
     let baselineId = "";
@@ -501,7 +502,8 @@
       target.innerHTML = rows.length ? rows.map((row) => {
         const width = Math.abs(row.delta) / maxDelta * 49;
         const direction = row.delta >= 0 ? "positive" : "negative";
-        return '<div class="game-row"><a class="game-id" target="_blank" rel="noopener" href="' +
+        return '<div class="game-row"><a class="game-id" target="_blank" rel="noopener" data-game-peek="' +
+          escapeHtml(row.gameId) + '" href="' +
           escapeHtml(taskUrl(row.gameId)) + '" title="' + escapeHtml(row.gameId) + '">' +
           escapeHtml(row.gameId) + '</a><span class="game-value">' +
           formatNumber(row.baselineValue, definition.digits) + '</span><div class="delta-track">' +
@@ -567,7 +569,8 @@
           ? '<a target="_blank" rel="noopener" href="' + escapeHtml(row.reference.replay_url) + '">' +
             escapeHtml(row.referenceName) + '</a>'
           : escapeHtml(row.referenceName);
-        return '<div class="opportunity-row"><a class="game-id" target="_blank" rel="noopener" href="' +
+        return '<div class="opportunity-row"><a class="game-id" target="_blank" rel="noopener" data-game-peek="' +
+          escapeHtml(row.baseId) + '" href="' +
           escapeHtml(row.game.task_url) + '">' + escapeHtml(row.baseId) + '</a><span>' +
           formatNumber(row.ourScore, 2) + '</span><span>' + formatNumber(row.frontierScore, 2) +
           '</span><div class="room-track"><span class="room-bar" style="width:' + width +

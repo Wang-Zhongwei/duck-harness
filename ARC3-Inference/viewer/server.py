@@ -18,6 +18,7 @@ from inference.tools.score_registry import load_score_registry
 from inference.utils.run_artifacts import is_selectable_run_dir_name, run_dir_sort_key
 from viewer.data import list_run_dirs
 from viewer.data import load_game_payload, load_game_shell_payload, load_game_step_payload, load_run_summary
+from viewer.thumbnails import game_thumbnail_png
 
 
 log = logging.getLogger(__name__)
@@ -40,6 +41,10 @@ def _index_html_path() -> Path:
 
 def _comparison_html_path() -> Path:
     return Path(__file__).resolve().parent / "comparison.html"
+
+
+def _game_peek_js_path() -> Path:
+    return Path(__file__).resolve().parent / "game_peek.js"
 
 
 def _comparison_json_path(runs_dir: Path) -> Path:
@@ -213,7 +218,11 @@ def _load_comparison_html() -> str:
 
 
 def _index_html_version() -> int:
-    return max(_index_html_path().stat().st_mtime_ns, _comparison_html_path().stat().st_mtime_ns)
+    return max(
+        _index_html_path().stat().st_mtime_ns,
+        _comparison_html_path().stat().st_mtime_ns,
+        _game_peek_js_path().stat().st_mtime_ns,
+    )
 
 
 def _requested_run_dir(*, runs_dir: Path, default_run_dir: Path | None, requested_run: str | None) -> Path | None:
@@ -259,6 +268,7 @@ class _ViewerHandler(BaseHTTPRequestHandler):
 
     runs_dir: Path
     run_dir: Path | None
+    environments_dir: Path | None = None
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -267,6 +277,12 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             return
         if parsed.path in {"/comparison", "/comparison.html"}:
             self._send_html(_load_comparison_html())
+            return
+        if parsed.path == "/game-peek.js":
+            self._send_bytes(_game_peek_js_path().read_bytes(), "application/javascript; charset=utf-8")
+            return
+        if parsed.path == "/api/thumbnail":
+            self._handle_thumbnail_api(parsed.query)
             return
         if parsed.path == "/api/viewer-version":
             self._send_json({"version": _index_html_version()})
@@ -323,6 +339,27 @@ class _ViewerHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args) -> None:
         log.info("%s - %s", self.address_string(), fmt % args)
+
+    def _handle_thumbnail_api(self, query: str) -> None:
+        params = parse_qs(query)
+        game_id = params.get("game", [""])[0]
+        try:
+            png = game_thumbnail_png(game_id, environments_dir=self.environments_dir)
+        except Exception:
+            log.warning("Thumbnail rendering failed for %r", game_id, exc_info=True)
+            png = None
+        if png is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "No thumbnail for this game")
+            return
+        self._send_bytes(png, "image/png", cache_control="public, max-age=86400")
+
+    def _send_bytes(self, body: bytes, content_type: str, *, cache_control: str = "no-store") -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", cache_control)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _handle_comparison_api(self) -> None:
         try:
@@ -448,11 +485,14 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         return _ResponseBody(body=gzip.compress(content), is_gzipped=True)
 
 
-def build_handler(*, runs_dir: Path, run_dir: Path | None) -> type[_ViewerHandler]:
+def build_handler(
+    *, runs_dir: Path, run_dir: Path | None, environments_dir: Path | None = None
+) -> type[_ViewerHandler]:
     """Bind configuration into the request handler class."""
     handler_cls = type("ViewerHandler", (_ViewerHandler,), {})
     handler_cls.runs_dir = runs_dir
     handler_cls.run_dir = run_dir
+    handler_cls.environments_dir = environments_dir
     return handler_cls
 
 
@@ -462,13 +502,19 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8011)
     parser.add_argument("--runs-dir", default="runs")
     parser.add_argument("--run-dir", default=None, help="Optional explicit run directory to view.")
+    parser.add_argument(
+        "--environments-dir",
+        default=None,
+        help="Offline ARC env files used for game thumbnails (default: configs/inference.json environment.environments_dir).",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
     runs_dir = Path(args.runs_dir)
     run_dir = Path(args.run_dir) if args.run_dir else None
-    handler = build_handler(runs_dir=runs_dir, run_dir=run_dir)
+    environments_dir = Path(args.environments_dir) if args.environments_dir else None
+    handler = build_handler(runs_dir=runs_dir, run_dir=run_dir, environments_dir=environments_dir)
     server = ThreadingHTTPServer((args.host, args.port), handler)
 
     target = run_dir if run_dir is not None else runs_dir
