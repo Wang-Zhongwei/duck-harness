@@ -874,7 +874,9 @@ class HarnessSolver(Solver):
             "env": {},
         }
         if self.kaggle_enable_vllm:
-            config["env"] = duck_kaggle_run_env(self._kaggle_vllm_config())
+            config["env"] = duck_kaggle_run_env(
+                self._kaggle_vllm_config(), analyzer_timeout=self.analyzer_timeout
+            )
         return config
 
     @property

@@ -185,7 +185,9 @@ _RUN_ENV_DEFAULTS: tuple[tuple[str, str], ...] = (
     ("KAGGLE_LIMIT_MM_DATA_PER_REQUEST", ""),
     ("KAGGLE_SMOKE_MAX_TOKENS", "2048"),
     ("KAGGLE_UNBOUNDED_SMOKE_TIMEOUT", "300"),
-    ("ANALYZER_TIMEOUT", "400"),
+    # Display only: the real timeout is RUN_CONFIG["solver"]["analyzer_timeout"].
+    # Filled in by duck_kaggle_run_env() from the solver, never from the environment.
+    ("ANALYZER_TIMEOUT_HINT", ""),
     ("KAGGLE_SERVER_START_TIMEOUT", "1800"),
     ("SERVER_TOOL_CALL_PARSER", "qwen3_coder"),
     ("SERVER_REASONING_PARSER", "qwen3"),
@@ -195,7 +197,10 @@ _RUN_ENV_DEFAULTS: tuple[tuple[str, str], ...] = (
 RUN_ENV_NAMES: tuple[str, ...] = tuple(name for name, _default in _RUN_ENV_DEFAULTS)
 
 
-def duck_kaggle_run_env(config: DuckKaggleVllmConfig | None = None) -> dict[str, str]:
+def duck_kaggle_run_env(
+    config: DuckKaggleVllmConfig | None = None,
+    analyzer_timeout: float | None = None,
+) -> dict[str, str]:
     """The launcher's effective value for every runtime knob in ``_RUN_ENV_DEFAULTS``.
 
     Rendered into the notebook's ``RUN_CONFIG["env"]`` (via
@@ -212,6 +217,12 @@ def duck_kaggle_run_env(config: DuckKaggleVllmConfig | None = None) -> dict[str,
     env["LOCAL_ANALYZER_CONTEXT_WINDOW"] = str(
         int(env["LOCAL_ANALYZER_CONTEXT_WINDOW"] or env["KAGGLE_MAX_MODEL_LEN"])
     )
+    # Derived, not read: ANALYZER_TIMEOUT is a Makefile variable the launcher never
+    # exports, so reading it here always returned the literal default while the run
+    # used HarnessSolver.analyzer_timeout -- which is how taaf_setup_env.json came to
+    # claim 400s for runs that actually gave up at 900s.
+    if analyzer_timeout is not None:
+        env["ANALYZER_TIMEOUT_HINT"] = str(int(analyzer_timeout))
     return env
 
 
@@ -342,7 +353,10 @@ SMOKE_MAX_TOKENS = int(_env('KAGGLE_SMOKE_MAX_TOKENS', '2048'))
 # Must be <= the analyzer timeout: a generation slower than that is already fatal in
 # production, so there is nothing to be gained by waiting longer here.
 UNBOUNDED_SMOKE_TIMEOUT = int(_env('KAGGLE_UNBOUNDED_SMOKE_TIMEOUT', '300'))
-ANALYZER_TIMEOUT_HINT = _env('ANALYZER_TIMEOUT', '400')
+_analyzer_timeout_hint = _env('ANALYZER_TIMEOUT_HINT')
+ANALYZER_TIMEOUT_PHRASE = (
+    f'{_analyzer_timeout_hint}s' if _analyzer_timeout_hint else 'its configured timeout'
+)
 SERVER_START_TIMEOUT = int(_env('KAGGLE_SERVER_START_TIMEOUT', '1800'))
 # The vLLM argv hardcodes these three; SGLang needs them passed explicitly or the agent
 # silently gets no tool calls and no reasoning_content.
@@ -1170,7 +1184,7 @@ def run_api_smoke_test() -> None:
         raise AssertionError(
             f'An unbounded generation did not finish within {UNBOUNDED_SMOKE_TIMEOUT}s '
             f'({exc!r}). Production sends no max_tokens and the analyzer gives up after '
-            f'{ANALYZER_TIMEOUT_HINT}s, so every turn would time out and the run would '
+            f'{ANALYZER_TIMEOUT_PHRASE}, so every turn would time out and the run would '
             f'score 0. This is what a degenerate repetition loop looks like from here.'
         ) from None
     elapsed = time.time() - started

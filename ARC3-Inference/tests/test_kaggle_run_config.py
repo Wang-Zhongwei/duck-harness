@@ -27,7 +27,6 @@ _RUN_ENV_A = {
     "LOCAL_ANALYZER_TEMPERATURE": "1.0",
     "KAGGLE_KV_CACHE_DTYPE": "fp8_e4m3",
     "SERVER_SPECULATIVE_CONFIG": '{"method": "mtp", "num_speculative_tokens": 3}',
-    "ANALYZER_TIMEOUT": "360",
     "KAGGLE_SERVER_BACKEND": "vllm",
 }
 _RUN_ENV_B = {
@@ -36,7 +35,6 @@ _RUN_ENV_B = {
     "LOCAL_ANALYZER_TEMPERATURE": "0.7",
     "KAGGLE_KV_CACHE_DTYPE": "",
     "SERVER_SPECULATIVE_CONFIG": "",
-    "ANALYZER_TIMEOUT": "240",
     "KAGGLE_SERVER_BACKEND": "vllm",
 }
 
@@ -68,7 +66,10 @@ def test_run_env_reflects_launcher_environment(monkeypatch: pytest.MonkeyPatch) 
     assert env["KAGGLE_MAX_MODEL_LEN"] == "65536"
     assert env["LOCAL_ANALYZER_CONTEXT_WINDOW"] == "32768"
     assert env["LOCAL_ANALYZER_TEMPERATURE"] == "1.0"
-    assert env["ANALYZER_TIMEOUT"] == "360"
+    # Not a launcher knob: it is derived from the solver, so an unpassed call is blank
+    # rather than a stale literal claiming a timeout the run never used.
+    assert env["ANALYZER_TIMEOUT_HINT"] == ""
+    assert kaggle.duck_kaggle_run_env(analyzer_timeout=900.0)["ANALYZER_TIMEOUT_HINT"] == "900"
     # Unset knobs carry the script's own fallback, so the notebook shows the effective value.
     assert env["LOCAL_ANALYZER_TOP_K"] == "20"
     assert env["KAGGLE_ATTENTION_BACKEND"] == ""
@@ -119,7 +120,11 @@ def test_setup_script_reads_run_env_at_runtime() -> None:
     assert ns["KV_CACHE_DTYPE"] == "fp8_e4m3"
     assert ns["VLLM_SPECULATIVE_CONFIG"] == _RUN_ENV_A["SERVER_SPECULATIVE_CONFIG"]
     assert ns["SMOKE_TEMPERATURE"] == 1.0
-    assert ns["ANALYZER_TIMEOUT_HINT"] == "360"
+    assert ns["ANALYZER_TIMEOUT_PHRASE"] == "its configured timeout"
+    assert (
+        _exec_setup_script_header({"ANALYZER_TIMEOUT_HINT": "900"})["ANALYZER_TIMEOUT_PHRASE"]
+        == "900s"
+    )
     ns = _exec_setup_script_header({})
     assert ns["VLLM_MAX_MODEL_LEN"] == kaggle.DEFAULT_VLLM_MAX_MODEL_LEN
     assert ns["ANALYZER_CONTEXT_WINDOW"] == kaggle.DEFAULT_VLLM_MAX_MODEL_LEN
@@ -138,6 +143,8 @@ def test_solver_run_config_shape(monkeypatch: pytest.MonkeyPatch) -> None:
         "analyzer_timeout": 360.0,
     }
     assert config["env"]["LOCAL_ANALYZER_CONTEXT_WINDOW"] == "32768"
+    # The hint beside the solver block must be the solver block's own value.
+    assert config["env"]["ANALYZER_TIMEOUT_HINT"] == "360"
     # Survives the JSON round-trip the framework applies.
     assert deploy_kaggle.merge_run_config(config)["solver"]["concurrency"] == 22
 
