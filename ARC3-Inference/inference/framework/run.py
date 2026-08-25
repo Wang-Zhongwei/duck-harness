@@ -555,16 +555,56 @@ def _experiments_dir(args: argparse.Namespace, *, required: bool = True) -> Path
 
 def _experiment_dir(args: argparse.Namespace) -> Path:
     if str(args.experiment_dir or "").strip():
+        # Explicit --experiment-dir stays the "put it exactly here" escape hatch.
         path = Path(args.experiment_dir)
         path.mkdir(parents=True, exist_ok=True)
         if not (path / "git_info.txt").exists():
             save_git_info(path)
         return path
     path, _log_file = setup_experiment_directory(
-        base_output_dir=_experiments_dir(args),
+        base_output_dir=_run_root_for_target(args),
         run_name=args.run_name or None,
     )
     return path
+
+
+def _run_root_for_target(args: argparse.Namespace) -> Path:
+    """Route a new run into runs/local/ or runs/kaggle/<kernel-slug>/<bucket>/.
+
+    Kaggle deploys land in ``_pending`` first; once the push reports a kernel version
+    the directory is renamed to ``v<NN>`` (see ``_promote_kaggle_run_dir``). Dry runs
+    never produce a version, so they go straight to ``dry-runs``.
+    """
+    root = _experiments_dir(args)
+    target = str(getattr(args, "deployment_target", "") or "").strip().lower()
+    if target != "kaggle":
+        return root / "local"
+    slug = _default_kaggle_kernel_slug(args)
+    bucket = "dry-runs" if bool(getattr(args, "kaggle_dry_run", False)) else "_pending"
+    return root / "kaggle" / slug / bucket
+
+
+def _promote_kaggle_run_dir(run_dir: Path, kernel_version: int | None) -> Path:
+    """Rename runs/kaggle/<slug>/_pending/<timestamp>/ to .../v<NN>/ after a push.
+
+    Leaves the directory in ``_pending`` when the push did not report a version, so a
+    rejected push is visibly distinct from one that created a kernel version.
+    """
+    if run_dir.parent.name != "_pending":
+        return run_dir
+    if not kernel_version:
+        print(
+            f"deploy.kaggle: no kernel version reported; run dir stays at {run_dir}",
+            flush=True,
+        )
+        return run_dir
+    target = run_dir.parent.parent / f"v{int(kernel_version):02d}"
+    if target.exists():
+        print(f"deploy.kaggle: {target} already exists; leaving {run_dir} in _pending", flush=True)
+        return run_dir
+    run_dir.rename(target)
+    print(f"deploy.kaggle: run dir -> {target}", flush=True)
+    return target
 
 
 def _optional_positive_float(raw_value: Any, *, option_name: str) -> float | None:
@@ -1268,6 +1308,14 @@ def _run(args: argparse.Namespace) -> None:
         job_id = getattr(handle, "job_id", None)
         kernel_id = getattr(handle, "kernel_id", "")
         uploaded = bool(getattr(handle, "uploaded", True))
+        if kernel_id and uploaded:
+            # Name the run directory by the kernel version the push created. Must happen
+            # before handle.wait() so kaggle-output/ downloads into the version dir.
+            promoted = _promote_kaggle_run_dir(run_dir, getattr(handle, "kernel_version", None))
+            if promoted != run_dir:
+                run_dir = promoted
+                with contextlib.suppress(Exception):
+                    handle.job_dir = run_dir
         if kernel_id:
             print(f"Kaggle kernel: {kernel_id}")
             print(f"Kaggle notebook: https://www.kaggle.com/code/{kernel_id}")

@@ -240,7 +240,15 @@ def _requested_run_dir(*, runs_dir: Path, default_run_dir: Path | None, requeste
     if default_run_dir is not None and requested_name == default_run_dir.name:
         return default_run_dir
 
-    return runs_dir / requested_name
+    # Run identifiers are now paths relative to runs/ ("local/<run>",
+    # "kaggle/<slug>/v07"), because leaf names collide across kernel slugs. Since the
+    # identifier is attacker-controllable, confine the result to runs/ before using it.
+    candidate = (runs_dir / requested_name).resolve()
+    try:
+        candidate.relative_to(runs_dir.resolve())
+    except ValueError:
+        return None
+    return candidate
 
 
 def _resolve_static_file(run_dir: Path | None, rel_path: Path) -> Path | None:

@@ -14,6 +14,16 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _RUN_DIR_NAME_RE = re.compile(
     r"^(?P<timestamp>\d{8}_\d{6})(?:_(?P<suffix>\d{2}))?(?:(?P<legacy>_run)|_(?P<label>[A-Za-z0-9][A-Za-z0-9._-]*))?$"
 )
+# Kaggle runs live at runs/kaggle/<kernel-slug>/v<NN>/ and are named by kernel version.
+_KAGGLE_VERSION_DIR_RE = re.compile(r"^v(?P<version>\d{2,})$")
+
+# Directory names that are containers or run internals, never runs themselves.
+RESERVED_DIR_NAMES = frozenset({
+    "local", "kaggle", "analysis", "aggregates", "semi_private_scores", "traces",
+    "dry-runs", "rejected-pushes", "_pending",
+    "passes", "seeds", "src", "artifacts", "transcripts", "movies", "prompts",
+    "solver_analysis", "failed_passes", "kaggle-output", "kaggle_output", ".venv",
+})
 
 
 
@@ -32,24 +42,95 @@ def is_run_dir_name(name: str) -> bool:
     return _match_run_dir_name(name) is not None
 
 
+def is_kaggle_version_dir_name(name: str) -> bool:
+    """Return whether a directory name is a Kaggle kernel version dir (``v07``)."""
+    return _KAGGLE_VERSION_DIR_RE.fullmatch(name) is not None
+
+
 def is_selectable_run_dir_name(name: str) -> bool:
     """Return whether a run directory should participate in automatic discovery."""
+    if is_kaggle_version_dir_name(name):
+        return True
     match = _match_run_dir_name(name)
     return match is not None and match.group("legacy") is None
 
 
-def run_dir_sort_key(path_or_name: str | Path) -> tuple[str, int, str]:
-    """Return a deterministic sort key for run directory names."""
+def run_dir_sort_key(path_or_name: str | Path) -> tuple[int, str, int, int, str]:
+    """Return a deterministic sort key for run directory names.
+
+    Total by construction -- it must never raise, because the viewer sorts whatever
+    discovery hands it and a ValueError there surfaces as an opaque HTTP 500. Ordering:
+    timestamped runs (rank 2) sort above Kaggle version dirs (rank 1) above anything
+    else (rank 0); every branch returns the same tuple shape so comparisons are safe.
+    """
     name = Path(path_or_name).name
     match = _match_run_dir_name(name)
-    if match is None:
-        raise ValueError(f"Unsupported run directory name: {name!r}")
-    return (
-        match.group("timestamp"),
-        int(match.group("suffix") or 0),
-        0 if match.group("legacy") else 1,
-        match.group("label") or "",
-    )
+    if match is not None:
+        return (
+            2,
+            match.group("timestamp"),
+            int(match.group("suffix") or 0),
+            0 if match.group("legacy") else 1,
+            match.group("label") or "",
+        )
+    version = _KAGGLE_VERSION_DIR_RE.fullmatch(name)
+    if version is not None:
+        return (1, "", int(version.group("version")), 0, name)
+    return (0, "", 0, 0, name)
+
+
+def iter_run_dirs(root: str | Path, *, max_depth: int = 3) -> list[Path]:
+    """Find run directories under ``root``, descending through the local/ and
+    kaggle/<slug>/ container layout.
+
+    A directory counts as a run when its name is selectable AND it holds run data;
+    discovery does not descend into a directory once it has been classified as a run.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        return []
+    found: list[Path] = []
+
+    def walk(directory: Path, depth: int) -> None:
+        if depth > max_depth:
+            return
+        try:
+            entries = sorted(p for p in directory.iterdir() if p.is_dir())
+        except OSError:
+            return
+        for entry in entries:
+            if entry.name in RESERVED_DIR_NAMES or entry.name.startswith("."):
+                if entry.name in {"local", "kaggle", "analysis"}:
+                    walk(entry, depth + 1)
+                continue
+            if is_selectable_run_dir_name(entry.name) and _holds_run_data(entry):
+                found.append(entry)
+                continue
+            walk(entry, depth + 1)
+
+    walk(root, 0)
+    return found
+
+
+def _holds_run_data(directory: Path) -> bool:
+    """Whether a directory holds run results.
+
+    Viewer payloads live in ``<run>/artifacts/`` or under per-pass / per-seed artifact
+    directories -- never at the run root -- so a top-level glob alone would classify
+    every viewer-only run as "not a run".
+    """
+    for marker in ("evaluation.json", "run_config.json", "benchmark.json"):
+        if (directory / marker).exists():
+            return True
+    for pattern in (
+        "*_viewer_data.json",
+        "artifacts/*viewer_data.json",
+        "passes/*/artifacts/*viewer_data.json",
+        "seeds/*/artifacts/*viewer_data.json",
+    ):
+        if any(directory.glob(pattern)):
+            return True
+    return False
 
 
 def sanitize_run_name(name: str | None) -> str:

@@ -59,12 +59,14 @@ class KaggleHandle(taaf.deploy.DeploymentHandle):
     - ``kernel_id``: Kaggle kernel id, ``owner/slug``.
     - ``dataset_ref``: source dataset id, ``owner/slug``.
     - ``uploaded``: false for dry-run packaging.
+    - ``kernel_version``: version number the push created, or None.
     - ``poll_interval_s``: cadence for ``wait()`` status polling.
     """
 
     kernel_id: str = ""
     dataset_ref: str = ""
     uploaded: bool = False
+    kernel_version: int | None = None
     poll_interval_s: float = 30.0
     output_dir: Path | None = None
     _cached_benchmark: taaf.benchmark.Benchmark | None = field(default=None, init=False, repr=False)
@@ -99,10 +101,12 @@ class KaggleHandle(taaf.deploy.DeploymentHandle):
         kernel_id = str(meta.get("job_id") or cfg.get("kernel_id") or "")
         dataset_ref = str(cfg.get("source_dataset_ref") or cfg.get("dataset_ref") or "")
         uploaded = bool(cfg.get("uploaded", True))
+        kernel_version = cfg.get("kernel_version")
         output_raw = cfg.get("output_dir")
         output_dir = Path(output_raw) if isinstance(output_raw, str) and output_raw else None
         return cls(
-            job_dir=job_dir, kernel_id=kernel_id, dataset_ref=dataset_ref, uploaded=uploaded, output_dir=output_dir
+            job_dir=job_dir, kernel_id=kernel_id, dataset_ref=dataset_ref, uploaded=uploaded,
+            kernel_version=int(kernel_version) if kernel_version else None, output_dir=output_dir
         )
 
     def _load_or_pull_benchmark(self) -> taaf.benchmark.Benchmark:
@@ -214,6 +218,9 @@ class KaggleTarget(taaf.deploy.DeploymentTarget):
     kernel_id: str = field(default="", init=False)
     source_dataset_ref: str = field(default="", init=False)
     uploaded: bool = field(default=False, init=False)
+    # Kernel version created by the push; recorded so a run directory can be named by
+    # version and the mapping never has to be reconstructed from session ids again.
+    kernel_version: int | None = field(default=None, init=False)
     actual_run_as_submission: bool = field(default=False, init=False)
     is_competition_rerun: bool = field(default=False, init=False)
 
@@ -310,13 +317,14 @@ class KaggleTarget(taaf.deploy.DeploymentTarget):
         )
 
         self.uploaded = False
+        self.kernel_version = None
         if not self.dry_run:
             if key is None:
                 raise RuntimeError("Missing Kaggle API key. Set KAGGLE_KEY or ~/.kaggle/kaggle.json.")
             _ensure_kaggle_cli_available()
             _check_kaggle_auth(username, key)
             _ensure_dataset(source_bundle, dataset_ref, self.dataset_version_message, username, key)
-            _push_kernel(
+            self.kernel_version = _push_kernel(
                 kernel_bundle,
                 accelerator=None if self.cpu_only else self.accelerator,
                 timeout=self.kernel_push_timeout_s,
@@ -337,6 +345,7 @@ class KaggleTarget(taaf.deploy.DeploymentTarget):
             kernel_id=self.kernel_id,
             dataset_ref=dataset_ref,
             uploaded=self.uploaded,
+            kernel_version=self.kernel_version,
         )
 
 
@@ -963,6 +972,9 @@ def _wait_for_dataset_version_change(
     )
 
 
+_KERNEL_VERSION_RE = re.compile(r"[Kk]ernel version (\d+) successfully pushed")
+
+
 def _push_kernel(
     bundle_dir: Path,
     *,
@@ -970,15 +982,46 @@ def _push_kernel(
     timeout: int | None,
     username: str,
     key: str,
-) -> None:
+) -> int | None:
+    """Push the kernel and return the kernel version number the push created.
+
+    ``kaggle kernels push`` EXITS 0 EVEN WHEN IT REJECTS THE PUSH -- it prints
+    "Kernel push error: ..." and returns success. Relying on the exit code alone
+    therefore records ``uploaded=True`` for pushes that created no version, which is
+    why version numbers previously had to be reconstructed from session ids. Capture
+    the output, fail loudly on a rejection, and return the version so callers can
+    record it in deploy_meta.json.
+    """
     command = ["kaggle", "kernels", "push", "-p", str(bundle_dir)]
     if accelerator:
         command.extend(["--accelerator", accelerator])
     if timeout is not None:
         command.extend(["-t", str(timeout)])
-    result = subprocess.run(command, env=_kaggle_env(username, key), text=True, check=False)
+    result = subprocess.run(
+        command, env=_kaggle_env(username, key), text=True, check=False, capture_output=True
+    )
+    stdout = result.stdout or ""
+    stderr = result.stderr or ""
+    if stdout:
+        print(stdout, end="" if stdout.endswith("\n") else "\n", flush=True)
+    if stderr:
+        print(stderr, end="" if stderr.endswith("\n") else "\n", flush=True)
     if result.returncode != 0:
         raise RuntimeError(f"`{' '.join(command)}` failed with exit code {result.returncode}.")
+    combined = f"{stdout}\n{stderr}"
+    if "Kernel push error" in combined:
+        raise RuntimeError(
+            f"`{' '.join(command)}` was rejected by Kaggle (exit code 0):\n{combined.strip()}"
+        )
+    match = _KERNEL_VERSION_RE.search(combined)
+    if match is None:
+        print(
+            "deploy.kaggle: push succeeded but no kernel version was reported; "
+            "the run directory cannot be named by version.",
+            flush=True,
+        )
+        return None
+    return int(match.group(1))
 
 
 def package_for_local_debug(

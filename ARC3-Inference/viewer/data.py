@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from inference.tools.score_registry import DEFAULT_MINIMUM_RUN_DATE
-from inference.utils.run_artifacts import is_selectable_run_dir_name, run_dir_sort_key
+from inference.utils.run_artifacts import (
+    is_kaggle_version_dir_name,
+    is_selectable_run_dir_name,
+    iter_run_dirs,
+    run_dir_sort_key,
+)
 from inference.utils.viewer_artifacts import load_raw_events
 
 
@@ -90,6 +95,15 @@ class _NormalizedGameArtifact:
     full: dict[str, Any]
 
 
+def _run_key(path: Path, runs_dir: str | Path) -> str:
+    """Identify a run by its path relative to runs/ -- leaf names now collide
+    (every kernel slug has a ``v01``)."""
+    try:
+        return path.resolve().relative_to(Path(runs_dir).resolve()).as_posix()
+    except ValueError:
+        return path.name
+
+
 def _direct_run_dir(path: str | Path) -> Path | None:
     candidate = Path(path)
     if candidate.is_dir() and is_selectable_run_dir_name(candidate.name):
@@ -98,13 +112,17 @@ def _direct_run_dir(path: str | Path) -> Path | None:
 
 
 def _is_auto_selectable_run_dir(path: Path) -> bool:
-    """Return whether a Qwen 3.8-era run has data the viewer can display."""
-    return (
-        path.is_dir()
-        and is_selectable_run_dir_name(path.name)
-        and path.name[:8] >= DEFAULT_MINIMUM_RUN_DATE
-        and (bool(_viewer_data_paths(path)) or (path / "evaluation.json").is_file())
-    )
+    """Return whether a Qwen 3.8-era run has data the viewer can display.
+
+    Kaggle runs are named by kernel version (``v07``), so the date-prefix cutoff only
+    applies to timestamped run names -- ``"v07"[:8] >= "20260815"`` is False and would
+    hide every Kaggle run.
+    """
+    if not path.is_dir() or not is_selectable_run_dir_name(path.name):
+        return False
+    if not is_kaggle_version_dir_name(path.name) and path.name[:8] < DEFAULT_MINIMUM_RUN_DATE:
+        return False
+    return bool(_viewer_data_paths(path)) or (path / "evaluation.json").is_file()
 
 
 def find_latest_run_dir(base_dir: str | Path = "runs") -> Path | None:
@@ -116,7 +134,7 @@ def find_latest_run_dir(base_dir: str | Path = "runs") -> Path | None:
     if direct_run_dir is not None:
         return direct_run_dir
     candidates = sorted(
-        [path for path in runs_dir.iterdir() if _is_auto_selectable_run_dir(path)],
+        [path for path in iter_run_dirs(runs_dir) if _is_auto_selectable_run_dir(path)],
         key=run_dir_sort_key,
     )
     return candidates[-1] if candidates else None
@@ -131,7 +149,7 @@ def list_run_dirs(base_dir: str | Path = "runs") -> list[Path]:
     if direct_run_dir is not None:
         return [direct_run_dir]
     return sorted(
-        [path for path in runs_dir.iterdir() if _is_auto_selectable_run_dir(path)],
+        [path for path in iter_run_dirs(runs_dir) if _is_auto_selectable_run_dir(path)],
         key=run_dir_sort_key,
         reverse=True,
     )
@@ -147,7 +165,7 @@ def _resolve_run_dir(*, runs_dir: str | Path, run_dir: str | Path | None) -> Pat
 def load_run_summary(*, runs_dir: str | Path = "runs", run_dir: str | Path | None = None) -> dict[str, Any]:
     """Load lightweight run metadata and per-game summaries for the viewer shell."""
     resolved_run_dir = _resolve_run_dir(runs_dir=runs_dir, run_dir=run_dir)
-    available_runs = [path.name for path in list_run_dirs(runs_dir)]
+    available_runs = [_run_key(path, runs_dir) for path in list_run_dirs(runs_dir)]
     cache_key = (
         str(resolved_run_dir.resolve()),
         "summary",
@@ -169,7 +187,7 @@ def load_run_summary(*, runs_dir: str | Path = "runs", run_dir: str | Path | Non
 
     return {
         "run_name": resolved_run_dir.name,
-        "selected_run": resolved_run_dir.name,
+        "selected_run": _run_key(resolved_run_dir, runs_dir),
         "available_runs": available_runs,
         "source": cached["source"],
         "arc_palette": cached["arc_palette"],
@@ -187,7 +205,7 @@ def load_run_payload(
 ) -> dict[str, Any]:
     """Load a viewer payload for a specific run, or the latest run by default."""
     resolved_run_dir = _resolve_run_dir(runs_dir=runs_dir, run_dir=run_dir)
-    available_runs = [path.name for path in list_run_dirs(runs_dir)]
+    available_runs = [_run_key(path, runs_dir) for path in list_run_dirs(runs_dir)]
     cache_key = (
         str(resolved_run_dir.resolve()),
         "compact" if compact else "full",
@@ -207,7 +225,7 @@ def load_run_payload(
 
     return {
         "run_name": resolved_run_dir.name,
-        "selected_run": resolved_run_dir.name,
+        "selected_run": _run_key(resolved_run_dir, runs_dir),
         "available_runs": available_runs,
         "source": cached["source"],
         "arc_palette": cached["arc_palette"],
