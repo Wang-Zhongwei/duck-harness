@@ -27,7 +27,6 @@ _RUN_ENV_A = {
     "LOCAL_ANALYZER_TEMPERATURE": "1.0",
     "KAGGLE_KV_CACHE_DTYPE": "fp8_e4m3",
     "SERVER_SPECULATIVE_CONFIG": '{"method": "mtp", "num_speculative_tokens": 3}',
-    "KAGGLE_SERVER_BACKEND": "vllm",
 }
 _RUN_ENV_B = {
     "KAGGLE_MAX_MODEL_LEN": "131072",
@@ -35,7 +34,6 @@ _RUN_ENV_B = {
     "LOCAL_ANALYZER_TEMPERATURE": "0.7",
     "KAGGLE_KV_CACHE_DTYPE": "",
     "SERVER_SPECULATIVE_CONFIG": "",
-    "KAGGLE_SERVER_BACKEND": "vllm",
 }
 
 
@@ -128,7 +126,6 @@ def test_setup_script_reads_run_env_at_runtime() -> None:
     ns = _exec_setup_script_header({})
     assert ns["VLLM_MAX_MODEL_LEN"] == kaggle.DEFAULT_VLLM_MAX_MODEL_LEN
     assert ns["ANALYZER_CONTEXT_WINDOW"] == kaggle.DEFAULT_VLLM_MAX_MODEL_LEN
-    assert ns["SERVER_BACKEND"] == "vllm"
     assert ns["TOOL_CALL_PARSER"] == "qwen3_coder"
 
 

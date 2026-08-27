@@ -81,16 +81,10 @@
     "thinking": true
   },
   "kaggle": {
-    "backend": "vllm",
     "attention_backend": "TRITON_ATTN",
     "kv_cache_dtype": "fp8_e4m3",
     "max_model_len": 65536,
     "max_running_requests": 48,
-    "spec_algorithm": "EAGLE",
-    "spec_num_steps": 3,
-    "spec_eagle_topk": 1,
-    "spec_num_draft_tokens": 4,
-    "sglang_blob_dataset_source": "jonathanwang2022/sglang-0517-sp-blob",
     "wheelhouse_dataset_source": "jonathanwang2022/vllm-0271-wheelhouse-sm120",
     "model_dataset_source": "jonathanwang2022/qwen38-27b-nvfp4-unsloth",
     "served_model_name": "Qwen/Qwen3.8-27B-NVFP4",
