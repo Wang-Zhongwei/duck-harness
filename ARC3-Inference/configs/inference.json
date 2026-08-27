@@ -38,7 +38,7 @@
   },
   "server" : {
     "backend": "vllm",
-    "max_model_len": 131072,
+    "max_model_len": 65536,
     "host": "127.0.0.1",
     "port": 1234,
     "tensor_parallel_size": 1,
@@ -83,7 +83,7 @@
   },
   "kaggle": {
     "backend": "vllm",
-    "attention_backend": "TRITON_ATTN",
+    "attention_backend": "FLASHINFER",
     "kv_cache_dtype": "fp8_e4m3",
     "max_model_len": 65536,
     "max_running_requests": 48,

@@ -34,3 +34,5 @@ ARC3-Inference/distillation/rollouts/
 
 # Claude Code worktrees
 .claude/worktrees/
+aimo3-study
+allocation-study
