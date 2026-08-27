@@ -80,16 +80,10 @@ KAGGLE_DATASET_REF ?=
 # Kaggle-only engine knobs, read by inference/framework/kaggle.py. Deliberately NOT the
 # SERVER_* names: SERVER_BACKEND gates the local `server:` target, which only knows how
 # to launch vLLM, so reusing it would break `make server` and every sbatch run.
-KAGGLE_SERVER_BACKEND ?= $(shell $(CONFIG_VALUE) kaggle.backend vllm)
 KAGGLE_ATTENTION_BACKEND ?= $(shell $(CONFIG_VALUE) kaggle.attention_backend)
 KAGGLE_KV_CACHE_DTYPE ?= $(shell $(CONFIG_VALUE) kaggle.kv_cache_dtype)
 KAGGLE_MAX_RUNNING_REQUESTS ?= $(shell $(CONFIG_VALUE) kaggle.max_running_requests)
 # vLLM takes one --speculative-config JSON blob; SGLang wants four separate flags.
-KAGGLE_SPEC_ALGORITHM ?= $(shell $(CONFIG_VALUE) kaggle.spec_algorithm)
-KAGGLE_SPEC_NUM_STEPS ?= $(shell $(CONFIG_VALUE) kaggle.spec_num_steps)
-KAGGLE_SPEC_EAGLE_TOPK ?= $(shell $(CONFIG_VALUE) kaggle.spec_eagle_topk)
-KAGGLE_SPEC_NUM_DRAFT_TOKENS ?= $(shell $(CONFIG_VALUE) kaggle.spec_num_draft_tokens)
-SGLANG_BLOB_DATASET_SOURCE ?= $(shell $(CONFIG_VALUE) kaggle.sglang_blob_dataset_source)
 KAGGLE_WHEELHOUSE_DATASET_SOURCE ?= $(shell $(CONFIG_VALUE) kaggle.wheelhouse_dataset_source)
 # vLLM --max-model-len on Kaggle. HarnessSolver never fills its kaggle_* fields from JSON,
 # so without this the notebook ran kaggle.py's hardcoded default whatever server.max_model_len said.
@@ -308,15 +302,9 @@ export SERVER_SPECULATIVE_CONFIG
 export SERVER_TOOL_CALL_PARSER
 export SERVER_REASONING_PARSER
 export SERVER_DEFAULT_CHAT_TEMPLATE_KWARGS
-export KAGGLE_SERVER_BACKEND
 export KAGGLE_ATTENTION_BACKEND
 export KAGGLE_KV_CACHE_DTYPE
 export KAGGLE_MAX_RUNNING_REQUESTS
-export KAGGLE_SPEC_ALGORITHM
-export KAGGLE_SPEC_NUM_STEPS
-export KAGGLE_SPEC_EAGLE_TOPK
-export KAGGLE_SPEC_NUM_DRAFT_TOKENS
-export SGLANG_BLOB_DATASET_SOURCE
 export KAGGLE_LIMIT_MM_DATA_PER_REQUEST
 export KAGGLE_SERVER_START_TIMEOUT
 export KAGGLE_WHEELHOUSE_DATASET_SOURCE

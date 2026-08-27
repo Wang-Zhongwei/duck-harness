@@ -11,23 +11,13 @@ from inference.utils.openai_compat import normalize_provider
 # (driessmit1/arc3-vllm-h100-wheelhouse-v3, vllm 0.19.0) is NOT interchangeable: it
 # predates NVFP4 support on sm_120, and it was built for sm_90. See VLLM-KAGGLE-SETUP.md.
 DEFAULT_VLLM_WHEELHOUSE_DATASET_SOURCE = "jonathanwang2022/vllm-0271-wheelhouse-sm120"
-# SGLang ships as one opaque >1 GiB blob (a tar of a site-packages tree) because Kaggle
-# silently fails to create a dataset from an archive of ~100k files.
-DEFAULT_SGLANG_BLOB_DATASET_SOURCE = "jonathanwang2022/sglang-0517-sp-blob"
 DEFAULT_QWEN_MODEL_DATASET_SOURCE = "jakobbrggen/qwen3-8-27b-fp8-hf-snapshot"
-# The Kaggle default, and it MUST be served by vLLM. Its lm_head is FP8, not NVFP4
-# (no `weight_scale_2` in the safetensors index), which unsloth documents as "vLLM only
-# for now (SGLang is not supported)". Pairing it with SGLang is what produced the
-# degeneration recorded in kernel sglang-quality-matrix -- 5-gram diversity 0.109-0.385
-# against 0.873-0.984 for FP8 -- which was a checkpoint/engine mismatch, NOT a property
-# of NVFP4. Kernel nvfp4-vendor-ab v5 settled it: on vLLM 0.27.1 this checkpoint passes
-# the sanity battery at diversity 1.000 and runs ~2.5x faster than SGLang x RadixArk at
-# C=16 (544.8/578.6 vs 225.5/229.1 agg tok/s). See VLLM-KAGGLE-SETUP.md.
+# The Kaggle default. Its lm_head is FP8, not NVFP4 (no `weight_scale_2` in the
+# safetensors index), which unsloth documents as vLLM-only. Kernel nvfp4-vendor-ab v5:
+# on vLLM 0.27.1 it passes the sanity battery at diversity 1.000 and runs ~2.5x faster
+# than the alternative at C=16. A checkpoint/engine mismatch does not raise -- it serves
+# fluent garbage. See VLLM-KAGGLE-SETUP.md.
 DEFAULT_QWEN_NVFP4_MODEL_DATASET_SOURCE = "jonathanwang2022/qwen38-27b-nvfp4-unsloth"
-# The SGLang-compatible sibling: NVFP4 lm_head, carries `weight_scale_2`. The two
-# checkpoints are not interchangeable across engines -- check the lm_head keys, not the
-# name.
-DEFAULT_QWEN_NVFP4_RADIXARK_MODEL_DATASET_SOURCE = "jonathanwang2022/qwen38-27b-nvfp4-radixark"
 DEFAULT_SERVED_MODEL_NAME = "Qwen/Qwen3.8-27B-FP8"
 DEFAULT_SERVED_MODEL_NAME_NVFP4 = "Qwen/Qwen3.8-27B-NVFP4"
 DEFAULT_VLLM_PORT = 1234
@@ -91,21 +81,13 @@ def _kaggle_env(name: str, default: str = "") -> str:
     return (str(os.environ.get(name, "") or "").strip()) or default
 
 
-def _kaggle_backend() -> str:
-    # KAGGLE_SERVER_BACKEND is deliberately distinct from SERVER_BACKEND: the latter
-    # gates the LOCAL `make server` target, which only knows how to launch vLLM.
-    return _kaggle_env("KAGGLE_SERVER_BACKEND", "vllm").lower()
-
-
 def _runtime_dataset_source(cfg: DuckKaggleVllmConfig) -> str:
-    """Runtime slot: the vLLM wheelhouse, or the SGLang site-packages blob."""
-    if _kaggle_backend() != "sglang":
-        # Same reason as the model source below: HarnessSolver never populates its
-        # kaggle_* fields from JSON, so without this the only way to repoint the
-        # wheelhouse is to edit this file. The wheelhouse and the checkpoint have to
-        # move together (0.19.0 cannot serve NVFP4 on sm_120), so both need a knob.
-        return _kaggle_env("KAGGLE_WHEELHOUSE_DATASET_SOURCE", cfg.wheelhouse_dataset_source)
-    return _kaggle_env("SGLANG_BLOB_DATASET_SOURCE", DEFAULT_SGLANG_BLOB_DATASET_SOURCE)
+    """Runtime slot: the vLLM wheelhouse."""
+    # Same reason as the model source below: HarnessSolver never populates its
+    # kaggle_* fields from JSON, so without this the only way to repoint the
+    # wheelhouse is to edit this file. The wheelhouse and the checkpoint have to
+    # move together (0.19.0 cannot serve NVFP4 on sm_120), so both need a knob.
+    return _kaggle_env("KAGGLE_WHEELHOUSE_DATASET_SOURCE", cfg.wheelhouse_dataset_source)
 
 
 def _model_dataset_source(cfg: DuckKaggleVllmConfig) -> str:
@@ -114,9 +96,9 @@ def _model_dataset_source(cfg: DuckKaggleVllmConfig) -> str:
     override = _kaggle_env("KAGGLE_MODEL_DATASET_SOURCE")
     if override:
         return override
-    # The checkpoint must match the backend, and the failure mode is silent: a mismatched
-    # pairing serves fluent garbage rather than raising. unsloth NVFP4 -> vLLM,
-    # RadixArk NVFP4 -> SGLang, FP8 -> either. See DEFAULT_QWEN_NVFP4_MODEL_DATASET_SOURCE.
+    # The checkpoint must suit vLLM, and the failure mode is silent: a mismatched
+    # checkpoint serves fluent garbage rather than raising.
+    # See DEFAULT_QWEN_NVFP4_MODEL_DATASET_SOURCE.
     return cfg.model_dataset_source
 
 
@@ -154,9 +136,6 @@ def _validated_analyzer_provider() -> str:
 # notebook exports before running setup_commands.json -- so the rendered script is the
 # same bytes for every configuration, and the notebook shows the effective values.
 _RUN_ENV_DEFAULTS: tuple[tuple[str, str], ...] = (
-    # Also read at render time by duck_kaggle_dataset_sources (the SGLang blob must be
-    # attached); hand-editing it in the notebook alone cannot swap engines.
-    ("KAGGLE_SERVER_BACKEND", "vllm"),
     ("KAGGLE_MAX_MODEL_LEN", ""),  # "" -> the rendered DuckKaggleVllmConfig.max_model_len
     ("LOCAL_ANALYZER_CONTEXT_WINDOW", ""),  # "" -> KAGGLE_MAX_MODEL_LEN
     ("LOCAL_ANALYZER_PROVIDER", "vllm"),
@@ -176,10 +155,6 @@ _RUN_ENV_DEFAULTS: tuple[tuple[str, str], ...] = (
     ("SERVER_SPECULATIVE_CONFIG", ""),
     ("KAGGLE_ATTENTION_BACKEND", ""),
     ("KAGGLE_KV_CACHE_DTYPE", ""),
-    ("KAGGLE_SPEC_ALGORITHM", ""),
-    ("KAGGLE_SPEC_NUM_STEPS", ""),
-    ("KAGGLE_SPEC_EAGLE_TOPK", ""),
-    ("KAGGLE_SPEC_NUM_DRAFT_TOKENS", ""),
     ("KAGGLE_MAX_RUNNING_REQUESTS", ""),
     ("KAGGLE_LIMIT_MM_DATA_PER_REQUEST", ""),
     ("KAGGLE_SMOKE_MAX_TOKENS", "2048"),
@@ -211,7 +186,6 @@ def duck_kaggle_run_env(
     env: dict[str, str] = {}
     for name, default in _RUN_ENV_DEFAULTS:
         env[name] = _kaggle_env(name, default)
-    env["KAGGLE_SERVER_BACKEND"] = env["KAGGLE_SERVER_BACKEND"].lower()
     env["KAGGLE_MAX_MODEL_LEN"] = str(int(env["KAGGLE_MAX_MODEL_LEN"] or cfg.max_model_len))
     env["LOCAL_ANALYZER_CONTEXT_WINDOW"] = str(
         int(env["LOCAL_ANALYZER_CONTEXT_WINDOW"] or env["KAGGLE_MAX_MODEL_LEN"])
@@ -321,26 +295,18 @@ VLLM_SPECULATIVE_CONFIG = _env('SERVER_SPECULATIVE_CONFIG')
 WORKING_DIR = Path(os.environ['TAAF_KAGGLE_WORKING_DIR'])
 # NOT under WORKING_DIR. The tree expands to ~10 GB of torch + CUDA, which counts
 # against the 20 GiB notebook-output cap and ships in `kaggle kernels output` -- that is
-# how run 1 of nvfp4-vendor-ab lost its failure cause behind a multi-GB download. Same
-# reasoning as SGLANG_TREE below; with /tmp, run 2's whole output was 57 KB.
+# how run 1 of nvfp4-vendor-ab lost its failure cause behind a multi-GB download.
+# With /tmp, run 2's whole output was 57 KB.
 SITE_PACKAGES = Path('/tmp/vllm-site-packages')
 VLLM_SERVER_LOG = WORKING_DIR / 'vllm-openai-server.log'
 VLLM_SERVER_PID = WORKING_DIR / 'vllm-openai-server.pid'
 INSTALL_STAMP = SITE_PACKAGES / f'.{WHEELHOUSE_SLUG}'
 STAMP_TEXT = __WHEELHOUSE_STAMP_TEXT__
 
-# Engine selection. "vllm" is the historical path; "sglang" swaps in the blob-mounted
-# SGLang server. One key, two spellings for the attention backend: vLLM wants
-# TRITON_ATTN, SGLang wants triton, and each rejects the other's at argument parsing --
-# loudly, at launch -- so these are straight pass-throughs, not translations.
-SERVER_BACKEND = _env('KAGGLE_SERVER_BACKEND', 'vllm').lower()
+# Straight pass-throughs to the vLLM argv, not translations: a name vLLM does not
+# recognise is rejected loudly at launch.
 ATTENTION_BACKEND = _env('KAGGLE_ATTENTION_BACKEND')
 KV_CACHE_DTYPE = _env('KAGGLE_KV_CACHE_DTYPE')
-# vLLM takes --speculative-config as one JSON blob; SGLang wants four flags.
-SPEC_ALGORITHM = _env('KAGGLE_SPEC_ALGORITHM')
-SPEC_NUM_STEPS = _env('KAGGLE_SPEC_NUM_STEPS')
-SPEC_EAGLE_TOPK = _env('KAGGLE_SPEC_EAGLE_TOPK')
-SPEC_NUM_DRAFT_TOKENS = _env('KAGGLE_SPEC_NUM_DRAFT_TOKENS')
 MAX_RUNNING_REQUESTS = _env('KAGGLE_MAX_RUNNING_REQUESTS')
 LIMIT_MM_PER_REQUEST = _env('KAGGLE_LIMIT_MM_DATA_PER_REQUEST')
 # The smoke test must sample exactly like the agent: greedy decoding sends this model
@@ -365,13 +331,6 @@ DEFAULT_CHAT_TEMPLATE_KWARGS = _env(
     'SERVER_DEFAULT_CHAT_TEMPLATE_KWARGS',
     '{"preserve_thinking": true, "reasoning_effort": "xhigh"}',
 )
-# The blob untars to /tmp and NOT to WORKING_DIR. Two independent reasons: everything
-# under /kaggle/working is committed as notebook output against a 20 GiB cap, and the
-# CUDA-layout repair below mutates the tree, which /kaggle/input cannot do (read-only).
-SGLANG_TREE = Path('/tmp/sglang-sp')
-# The SGLang branch deliberately reuses the vLLM log and pid filenames so that
-# tail_server_log(), wait_for_vllm_server() and the teardown script -- which take no
-# config and hardcode these names -- keep working with no engine knowledge.
 SERVER_PGID_PATH = WORKING_DIR / 'inference-server.pgid'
 # A 64x64 RGB PNG used to prove the multimodal path end to end during setup. The agent
 # sends a base64 image part on EVERY turn, so a server that cannot accept one scores 0
@@ -401,10 +360,7 @@ def resolve_kaggle_dataset_path(owner: str, slug: str) -> Path:
     return Path('/kaggle/input') / slug
 
 
-# One runtime dataset slot, reinterpreted by SERVER_BACKEND: the vLLM wheelhouse to
-# pip-install from, or the SGLang site-packages blob to untar.
 WHEELHOUSE = resolve_kaggle_dataset_path(WHEELHOUSE_OWNER, WHEELHOUSE_SLUG)
-SGLANG_RUNTIME = WHEELHOUSE
 MODEL_ROOT = resolve_kaggle_dataset_path(MODEL_OWNER, MODEL_SLUG)
 
 
@@ -465,7 +421,7 @@ def vllm_env() -> dict[str, str]:
     # the normaliser emits for SM 12.0 under CUDA >= 12.9.
     env.setdefault('FLASHINFER_CUDA_ARCH_LIST', '12.0f')
     # nvcc reports 13.4 while cuda_runtime_api.h says CUDART_VERSION 13000; CCCL
-    # hard-errors on the skew and kills the JIT. sglang_env() works around the same one.
+    # hard-errors on the skew and kills the JIT.
     env['NVCC_APPEND_FLAGS'] = (env.get('NVCC_APPEND_FLAGS', '') + ' -DCCCL_DISABLE_CTK_COMPATIBILITY_CHECK').strip()
     # LINK time, and distinct from LD_LIBRARY_PATH: the JIT's `ld -lcudart` resolves
     # against LIBRARY_PATH. /usr/local/nvidia/lib64 carries libcuda but NOT libcudart,
@@ -533,8 +489,7 @@ def install_vllm_wheelhouse() -> None:
 
 def repair_vllm_install() -> None:
     # Required on sm_120: without this the FlashInfer FP4 JIT fails to link and the
-    # engine core dies at init. Same soname repair prepare_sglang_tree() does for the
-    # SGLang blob. See VLLM-KAGGLE-SETUP.md section 6.
+    # engine core dies at init. See VLLM-KAGGLE-SETUP.md section 6.
     for binary in (SITE_PACKAGES / 'nvidia/cu13/bin').glob('*'):
         # The FP4 JIT shells out to these; a lost exec bit is a silent build failure.
         try:
@@ -643,271 +598,9 @@ def wait_for_vllm_server(timeout_seconds: int = 900) -> None:
     raise TimeoutError(f'Timed out waiting for vLLM server at {url}.\nLast server log lines:\n{tail_server_log()}')
 
 
-def sglang_supported_flags(env: dict) -> set:
-    # Ask the installed argparse what it accepts instead of trusting a flag list.
-    # An unrecognised option makes launch_server SystemExit(2) with no server and no
-    # useful log, which on a real submission costs the entire 9-hour run.
-    result = subprocess.run(
-        [sys.executable, '-m', 'sglang.launch_server', '--help'],
-        env=env, cwd='/tmp', capture_output=True, text=True, timeout=600,
-    )
-    text = (result.stdout or '') + (result.stderr or '')
-    flags = set(re.findall(r'--[a-z0-9][a-z0-9-]+', text))
-    assert '--model-path' in flags, (
-        'Could not read SGLang argument table (is the tree importable?).\n'
-        + text[-4000:]
-    )
-    return flags
-
-
-def prepare_sglang_tree() -> Path:
-    # Untar the blob, then repair a defect in sglang 0.5.17's own dependency pins:
-    # <sp>/nvidia/cu13 has lib/ but no lib64/ and ships only versioned sonames, so every
-    # JIT link dies with 'ld: cannot find -lcudart'. Verified fatal on this exact image,
-    # then fixed, by kernel sglang-matrix-probe. The nvcc/header skew is handled in
-    # sglang_env(). Every check here is an assert: it costs seconds, and the alternative
-    # is discovering the problem minutes later as an unexplained CUDA failure.
-    import stat
-    import tarfile
-    # The blob is a cp312 site-packages tree. Asserting that torch/_C.cpython-312*.so exists
-    # (below) proves something about the BLOB, not about the interpreter the notebook handed
-    # us -- taaf_kaggle_run.ipynb sets PYTHON = sys.executable. If Kaggle bumps the image,
-    # every extension module fails to import minutes later with no obvious cause.
-    assert sys.version_info[:2] == (3, 12), (
-        f'The SGLang blob is a cp312 tree but this interpreter is '
-        f'{sys.version_info.major}.{sys.version_info.minor}. The Kaggle base image changed; '
-        f'rebuild the blob before submitting.'
-    )
-    blobs = sorted(
-        (path for path in SGLANG_RUNTIME.rglob('*') if path.is_file() and path.stat().st_size > 1_000_000_000),
-        key=lambda path: path.stat().st_size,
-        reverse=True,
-    )
-    assert blobs, f'No SGLang blob (a file > 1 GiB) under {SGLANG_RUNTIME}. Is the dataset attached?'
-    blob = blobs[0]
-    existing = sorted(SGLANG_TREE.rglob('sglang/srt')) if SGLANG_TREE.exists() else []
-    if existing and (SGLANG_TREE / '.unpacked').exists():
-        site_packages = existing[0].parent.parent
-        print(f'Reusing unpacked SGLang tree at {site_packages}', flush=True)
-    else:
-        # Assert free space BEFORE extracting: a partial 5.1 GB untar leaves a tree that
-        # passes every existence check and then fails at import or JIT link minutes later.
-        free_gib = shutil.disk_usage('/tmp').free / 2 ** 30
-        assert free_gib >= 8.0, (
-            f'Only {free_gib:.1f} GiB free on /tmp; need >= 8 GiB for the SGLang tree '
-            f'plus the triton cache.'
-        )
-        shutil.rmtree(SGLANG_TREE, ignore_errors=True)
-        SGLANG_TREE.mkdir(parents=True, exist_ok=True)
-        started = time.time()
-        print(f'Untarring SGLang blob {blob} ({blob.stat().st_size} bytes) -> {SGLANG_TREE}', flush=True)
-        with tarfile.open(blob, 'r:*') as archive:
-            # An explicit filter is required: the default is deprecated and becomes an
-            # error on Python 3.14. 'tar' keeps internal symlinks, which the tree needs.
-            archive.extractall(SGLANG_TREE, filter='tar')
-        print(f'Untar took {time.time() - started:.0f}s', flush=True)
-        hits = sorted(SGLANG_TREE.rglob('sglang/srt'))
-        assert hits, f'Blob extracted but no sglang/srt found under {SGLANG_TREE}.'
-        site_packages = hits[0].parent.parent
-        (SGLANG_TREE / '.unpacked').write_text('ok', encoding='utf-8')
-    cu13 = site_packages / 'nvidia' / 'cu13'
-    lib = cu13 / 'lib'
-    assert lib.is_dir(), f'{lib} is missing; the CUDA layout cannot be repaired and every JIT link will fail.'
-    lib64 = cu13 / 'lib64'
-    if not lib64.exists():
-        lib64.symlink_to('lib')
-    aliases = 0
-    for shared_object in sorted(lib.glob('*.so.*')):
-        # libcudart.so.13 -> libcudart.so, which is the name -lcudart actually looks for.
-        bare = lib / (shared_object.name.split('.so.')[0] + '.so')
-        if not bare.exists():
-            try:
-                bare.symlink_to(shared_object.name)
-                aliases += 1
-            except OSError:
-                pass
-    print(f'Repaired CUDA layout: lib64 -> lib, {aliases} unversioned soname aliases', flush=True)
-    # Kaggle datasets can strip the exec bit, and triton shells out to these binaries.
-    for binary in list((site_packages / 'triton/backends/nvidia/bin').glob('*')) + list((cu13 / 'bin').glob('*')):
-        try:
-            binary.chmod(binary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        except OSError:
-            pass
-    required = {
-        'cp312 torch ext': site_packages / 'torch/_C.cpython-312-x86_64-linux-gnu.so',
-        'sglang package': site_packages / 'sglang/srt',
-        'libnvrtc.so.13': cu13 / 'lib/libnvrtc.so.13',
-        'cutlass DSL': site_packages / 'nvidia_cutlass_dsl/dsl_packages/cutlass',
-        'nvcc (cu13)': cu13 / 'bin/nvcc',
-        'ptxas': site_packages / 'triton/backends/nvidia/bin/ptxas',
-    }
-    missing = [f'{name} ({path})' for name, path in required.items() if not path.exists()]
-    assert not missing, 'Incomplete SGLang tree, missing: ' + '; '.join(missing)
-    print(f'SGLang preflight passed for {site_packages}', flush=True)
-    return site_packages
-
-
-def sglang_env(site_packages: Path) -> dict:
-    # Every entry must be set BEFORE spawn: ld.so snapshots LD_LIBRARY_PATH at exec, and
-    # SGLang forks scheduler and detokenizer subprocesses that would otherwise import
-    # Kaggle's own torch instead of the pinned one in the blob.
-    sp = str(site_packages)
-    # .pth files do NOT execute for PYTHONPATH entries, and the GDN layers import
-    # cutlass.cute, so the CuTe DSL directory has to be added by hand.
-    dsl = f'{sp}/nvidia_cutlass_dsl/dsl_packages'
-    libs = [f'{sp}/torch/lib', f'{sp}/nvidia/cu13/lib', f'{sp}/nvidia/cudnn/lib',
-            f'{sp}/nvidia/nccl/lib', f'{sp}/nvidia/cusparselt/lib', f'{sp}/nvidia/nvshmem/lib',
-            '/usr/local/nvidia/lib64', '/usr/lib/x86_64-linux-gnu']
-    libs += sorted(str(path) for path in (site_packages / 'nvidia').glob('*/lib'))
-    env = os.environ.copy()
-    env['PYTHONPATH'] = f'{sp}:{dsl}'
-    env['LD_LIBRARY_PATH'] = ':'.join(libs + [env.get('LD_LIBRARY_PATH', '')]).strip(':')
-    env['LIBRARY_PATH'] = ':'.join(['/usr/local/nvidia/lib64', env.get('LIBRARY_PATH', '')]).strip(':')
-    env['CUDA_HOME'] = f'{sp}/nvidia/cu13'
-    env['PATH'] = f'{sp}/nvidia/cu13/bin:' + env.get('PATH', '')
-    env['PYTHONNOUSERSITE'] = '1'
-    env['TRITON_CACHE_DIR'] = '/tmp/triton'
-    env['FLASHINFER_WORKSPACE_BASE'] = '/tmp/fi'
-    env['HF_HUB_OFFLINE'] = '1'
-    env['TRANSFORMERS_OFFLINE'] = '1'
-    # sglang 0.5.17 resolves nvidia_cuda_nvcc 13.4.46rc1 against nvidia_cuda_runtime
-    # 13.0.96, so nvcc reports 13.4 while cuda_runtime_api.h says CUDART_VERSION 13000 and
-    # CCCL hard-errors on the mismatch. That header documents this exact escape hatch, and
-    # a minor skew inside CUDA 13 is covered by minor-version compatibility.
-    env['NVCC_APPEND_FLAGS'] = (env.get('NVCC_APPEND_FLAGS', '') + ' -DCCCL_DISABLE_CTK_COMPATIBILITY_CHECK').strip()
-    env.pop('PYTHONHOME', None)
-    return env
-
-
-def start_sglang_server() -> None:
-    site_packages = prepare_sglang_tree()
-    env = sglang_env(site_packages)
-    supported = sglang_supported_flags(env)
-    VLLM_SERVER_LOG.parent.mkdir(parents=True, exist_ok=True)
-    VLLM_SERVER_PID.unlink(missing_ok=True)
-    SERVER_PGID_PATH.unlink(missing_ok=True)
-    log_handle = VLLM_SERVER_LOG.open('w', encoding='utf-8')
-    cmd = [
-        sys.executable, '-m', 'sglang.launch_server',
-        '--model-path', str(MODEL_PATH),
-        '--served-model-name', SERVED_MODEL_NAME,
-        '--host', VLLM_HOST,
-        '--port', str(VLLM_PORT),
-        '--tp-size', str(VLLM_TENSOR_PARALLEL_SIZE),
-        '--context-length', str(VLLM_MAX_MODEL_LEN),
-        '--trust-remote-code',
-        '--log-level', 'info',
-    ]
-    # Deliberately NOT passed, each verified harmful or absent for this model:
-    #   --mem-fraction-static  vLLM's 0.92 does not translate. SGLang's fraction excludes
-    #                          activations and cudagraph buffers; auto resolves to ~0.793.
-    #   --speculative-draft-model-path  shrinks the KV pool ~5x (num_nextn_predict_layers
-    #                          is absent from text_config, so it falls back to 64 layers).
-    #   --quantization         auto-detected from config.json for both checkpoints.
-    #   --enable-auto-tool-choice / --enable-prefix-caching  no SGLang equivalent; setting
-    #                          --tool-call-parser is what enables tool parsing, and the
-    #                          radix cache is on by default.
-    optional = [
-        ('--attention-backend', ATTENTION_BACKEND),
-        ('--kv-cache-dtype', KV_CACHE_DTYPE),
-        ('--max-running-requests', MAX_RUNNING_REQUESTS),
-        # LEAVE THIS UNSET on a branch that does not strip images from persisted history.
-        # MEASURED (kernel taaf-qwen38-fp8-sglang): setting '{"image": 4}' for parity with
-        # the vLLM runs produced 82,135 rejections -- "Image count 5 exceeds limit 4 per
-        # request" -- from action 3 onward, and a score of 0. This agent keeps up to 30
-        # assistant turns and attaches an image to every user turn, so the count passes 4
-        # almost immediately. `main` strips history images and can afford the cap; the
-        # upstream baseline cannot. Note also that every throughput and quality number in
-        # REPORT.md was measured with NO cap, so setting one is an unmeasured deviation.
-        ('--limit-mm-data-per-request', LIMIT_MM_PER_REQUEST),
-        ('--tool-call-parser', TOOL_CALL_PARSER),
-        ('--reasoning-parser', REASONING_PARSER),
-        ('--default-chat-template-kwargs', DEFAULT_CHAT_TEMPLATE_KWARGS),
-        # vLLM ran with --generation-config vllm, i.e. ignore the checkpoint's
-        # generation_config.json. SGLang's equivalent defaults the other way, so pass it
-        # explicitly or the checkpoint silently overrides the harness's sampling params.
-        ('--sampling-defaults', 'openai'),
-    ]
-    dropped = []
-    for flag, value in optional:
-        if not str(value).strip():
-            continue
-        if flag in supported:
-            cmd += [flag, str(value).strip()]
-        else:
-            dropped.append(flag)
-    if SPEC_ALGORITHM and '--speculative-algorithm' in supported:
-        cmd += ['--speculative-algorithm', str(SPEC_ALGORITHM).strip()]
-        for flag, value in (('--speculative-num-steps', SPEC_NUM_STEPS),
-                            ('--speculative-eagle-topk', SPEC_EAGLE_TOPK),
-                            ('--speculative-num-draft-tokens', SPEC_NUM_DRAFT_TOKENS)):
-            if str(value).strip():
-                cmd += [flag, str(value).strip()]
-    elif SPEC_ALGORITHM:
-        dropped.append('--speculative-algorithm')
-    # Every flag in that list changes what the server actually does -- tool parsing, KV
-    # dtype, attention backend, MTP depth. Losing any of them either scores ~0 or runs
-    # multiples slower while /health stays green for nine hours, and the drop could equally
-    # be a miss in the --help regex above rather than a genuinely absent flag. Fail loudly.
-    assert not dropped, (
-        f'This SGLang build did not report {dropped} in its argument table. Launching '
-        f'without them would silently change what is served.'
-    )
-    print('Starting SGLang server:', ' '.join(cmd), flush=True)
-    process = subprocess.Popen(
-        cmd, env=env, cwd='/tmp', stdout=log_handle, stderr=subprocess.STDOUT, text=True,
-        # Own session, so teardown can signal the scheduler and detokenizer children too.
-        # Without this they survive a SIGTERM to the launcher and keep the 96 GB of VRAM.
-        start_new_session=True,
-    )
-    VLLM_SERVER_PID.write_text(str(process.pid), encoding='utf-8')
-    SERVER_PGID_PATH.write_text(str(os.getpgid(process.pid)), encoding='utf-8')
-    # Explicit rather than the 900 s default: SGLang pays a cold triton JIT on top of
-    # loading 22.57 GB of NVFP4 weights off /kaggle/input. Measured ~340 s cold, but the
-    # default leaves little room, and dying here is unrecoverable.
-    wait_for_vllm_server(SERVER_START_TIMEOUT)
-    assert_served_config()
-
-
-def assert_served_config() -> None:
-    # An FP4 misconfiguration does not raise -- it produces fluent garbage. Check the
-    # config the server actually resolved, not just that it answers /health.
-    # Raising here rather than skipping: this check exists precisely because an FP4 or KV
-    # misconfiguration does not announce itself, so an unreadable endpoint is a reason to
-    # stop, not a reason to proceed unchecked.
-    info = request_json(f'http://{VLLM_HOST}:{VLLM_PORT}/get_server_info', timeout=60)
-    interesting = ('attention_backend', 'kv_cache_dtype', 'quantization', 'context_length',
-                   'max_total_num_tokens', 'max_running_requests', 'mem_fraction_static',
-                   'speculative_algorithm', 'speculative_num_steps')
-    print('Served config: ' + json.dumps({k: info[k] for k in interesting if k in info}), flush=True)
-    missing = [key for key in ('attention_backend', 'kv_cache_dtype') if key not in info]
-    assert not missing, (
-        f'/get_server_info did not report {missing}, so the served config cannot be '
-        f'verified. Keys present: {sorted(info)}'
-    )
-    expected = [('attention_backend', ATTENTION_BACKEND), ('kv_cache_dtype', KV_CACHE_DTYPE)]
-    if SPEC_NUM_STEPS:
-        expected.append(('speculative_num_steps', int(SPEC_NUM_STEPS)))
-    mismatched = [
-        f'{key}: asked {want!r}, serving {info.get(key)!r}'
-        for key, want in expected
-        if str(want).strip() and key in info and str(info.get(key)) != str(want)
-    ]
-    assert not mismatched, 'SGLang resolved a different config than requested: ' + '; '.join(mismatched)
-    # NOT asserted: 'quantization' reads back as None even for the NVFP4 checkpoint, and
-    # max_running_requests reports the requested value while the mamba state cache caps
-    # the effective one at 16.
-    if 'context_length' in info and int(info['context_length']) != int(VLLM_MAX_MODEL_LEN):
-        raise AssertionError(
-            f'context_length {info["context_length"]} != requested {VLLM_MAX_MODEL_LEN}'
-        )
-
 
 def start_inference_server() -> None:
-    if SERVER_BACKEND == 'sglang':
-        start_sglang_server()
-    else:
-        start_vllm_server()
+    start_vllm_server()
 
 
 def start_vllm_server() -> None:
@@ -1197,7 +890,6 @@ def run_api_smoke_test() -> None:
     print('=' * 88 + '\n', flush=True)
 
 
-print(f'Inference backend: {SERVER_BACKEND}', flush=True)
 print(f'Runtime dataset path: {WHEELHOUSE}', flush=True)
 print(f'Qwen model path: {MODEL_PATH}', flush=True)
 assert_expected_cuda_gpu()
@@ -1228,18 +920,15 @@ setup_env = {
     'MULTIMODAL_CONTEXT': _env('MULTIMODAL_CONTEXT', 'current_grid'),
     'MULTIMODAL_UPSCALE': _env('MULTIMODAL_UPSCALE', '4'),
 }
-if SERVER_BACKEND != 'sglang':
-    # The notebook splices every PYTHONPATH entry into the HARNESS process's own sys.path,
-    # so this is only safe for the vLLM tree, which the agent never imports from anyway.
-    # Doing it for SGLang would put its pinned torch/numpy/transformers ahead of Kaggle's
-    # inside the process that runs the whole benchmark.
-    setup_env.update({
-        'USE_TF': '0',
-        'TRANSFORMERS_NO_TF': '1',
-        'TRANSFORMERS_NO_TORCHVISION': '1',
-        'VLLM_NO_USAGE_STATS': '1',
-        'PYTHONPATH': str(SITE_PACKAGES) + os.pathsep + os.environ.get('PYTHONPATH', ''),
-    })
+# The notebook splices every PYTHONPATH entry into the HARNESS process's own sys.path.
+# That is safe for the vLLM tree, which the agent never imports from anyway.
+setup_env.update({
+    'USE_TF': '0',
+    'TRANSFORMERS_NO_TF': '1',
+    'TRANSFORMERS_NO_TORCHVISION': '1',
+    'VLLM_NO_USAGE_STATS': '1',
+    'PYTHONPATH': str(SITE_PACKAGES) + os.pathsep + os.environ.get('PYTHONPATH', ''),
+})
 setup_env_path = Path(os.environ['TAAF_KAGGLE_SETUP_ENV'])
 existing_setup_env = {}
 if setup_env_path.exists():

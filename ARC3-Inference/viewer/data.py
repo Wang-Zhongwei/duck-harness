@@ -1465,10 +1465,6 @@ def _section_signature(section: dict[str, Any]) -> tuple[str, str]:
     )
 
 
-def _default_in_context_for_transcript_section(section: dict[str, Any]) -> bool:
-    return str(section.get("label", "")).strip() != "THINKING"
-
-
 def _extract_context(
     analysis_events: list[dict[str, Any]] | None,
     *,
@@ -1498,7 +1494,7 @@ def _extract_context(
                     break
             if found_index is None:
                 transcript_insertions[search_start].append(
-                    {**section, "inContext": _default_in_context_for_transcript_section(section)}
+                    {**section, "inContext": True}
                 )
                 continue
             search_start = found_index + 1
@@ -1509,7 +1505,7 @@ def _extract_context(
                 sections.append(request_sections[index])
     else:
         sections.extend(
-            {**section, "inContext": _default_in_context_for_transcript_section(section)}
+            {**section, "inContext": True}
             for section in transcript_sections
         )
 
