@@ -137,7 +137,7 @@ def _get_env_float(name: str, default: float) -> float:
 _LOCAL_ANALYZER_MAX_OUTPUT = _get_env_int("LOCAL_ANALYZER_MAX_OUTPUT", 0)
 _LOCAL_ANALYZER_CONTEXT_WINDOW = _get_env_int("LOCAL_ANALYZER_CONTEXT_WINDOW", 32768)
 _LOCAL_ANALYZER_TIMEOUT = _get_env_float("LOCAL_ANALYZER_TIMEOUT", 0.0)
-_LOCAL_ANALYZER_TOOL_STEPS = _get_env_int("LOCAL_ANALYZER_TOOL_STEPS", 12)
+_LOCAL_ANALYZER_MAX_TOOL_CALLS = _get_env_int("LOCAL_ANALYZER_MAX_TOOL_CALLS", 12)
 _LOCAL_ANALYZER_TOOL_TIMEOUT = _get_env_int("LOCAL_ANALYZER_TOOL_TIMEOUT", 30)
 _LOCAL_ANALYZER_TOOL_OUTPUT_TOKENS = _get_env_int("LOCAL_ANALYZER_TOOL_OUTPUT_TOKENS", 1024)
 _LOCAL_ANALYZER_YIELD_SECONDS = _get_env_float("LOCAL_ANALYZER_YIELD_SECONDS", 0.0)
@@ -148,7 +148,7 @@ _LOCAL_ANALYZER_TOP_K = _get_env_int("LOCAL_ANALYZER_TOP_K", 20)
 _LOCAL_ANALYZER_SEED = _get_env_int("LOCAL_ANALYZER_SEED", -1)
 _REQUEST_SAFETY_MARGIN_TOKENS = 512
 _CONTEXT_OVERFLOW_RETRY_TRIM_TOKENS = 512
-_PERSISTENT_HISTORY_ASSISTANT_TURNS = 30
+_PERSISTENT_HISTORY_STEPS = 30
 _RESPONSE_META_MAX_CHARS = 4000
 
 _PYTHON_TOOL_DESCRIPTION = (
@@ -406,17 +406,6 @@ class _AsciiFrameView:
     __repr__ = __str__
 
 
-@dataclass(frozen=True)
-class _AsciiHistoryEntryView:
-    action: str
-    frame: _AsciiFrameView
-
-    def __str__(self) -> str:
-        return f"AsciiHistoryEntryView(action={self.action!r}, frame={self.frame})"
-
-    __repr__ = __str__
-
-
 def _to_ascii_frame_view(frame: Frame | None) -> _AsciiFrameView | None:
     if frame is None:
         return None
@@ -426,16 +415,6 @@ def _to_ascii_frame_view(frame: Frame | None) -> _AsciiFrameView | None:
         level=frame.level,
         shape=frame.shape,
     )
-
-
-def _to_ascii_history_views(history_entries: list[HistoryEntry]) -> list[_AsciiHistoryEntryView]:
-    views: list[_AsciiHistoryEntryView] = []
-    for entry in history_entries:
-        frame_view = _to_ascii_frame_view(entry.frame)
-        if frame_view is None:
-            continue
-        views.append(_AsciiHistoryEntryView(action=entry.action, frame=frame_view))
-    return views
 
 
 def _ascii_frame_view_payload(frame: Frame | None) -> dict[str, Any] | None:
@@ -459,16 +438,6 @@ def _ascii_history_view_payload(history_entries: list[HistoryEntry]) -> list[dic
             continue
         payload.append({"action": entry.action, "frame": frame_payload})
     return payload
-
-
-def _format_action_span(start_action_num: int | None, end_action_num: int | None) -> str | None:
-    if start_action_num is None or end_action_num is None:
-        return None
-    if start_action_num <= 0 or end_action_num <= 0:
-        return None
-    if start_action_num == end_action_num:
-        return f"{start_action_num}"
-    return f"{start_action_num}-{end_action_num}"
 
 
 def _estimate_tokens(value: Any) -> int:
@@ -941,7 +910,7 @@ class ToolAgent:
         configured_timeout = _LOCAL_ANALYZER_TIMEOUT if timeout is None else timeout
         self._timeout = None if configured_timeout is None or configured_timeout <= 0 else float(configured_timeout)
         self._api_key = str(api_key or "").strip()
-        self._tool_steps = None if _LOCAL_ANALYZER_TOOL_STEPS <= 0 else max(1, _LOCAL_ANALYZER_TOOL_STEPS)
+        self._max_tool_calls = None if _LOCAL_ANALYZER_MAX_TOOL_CALLS <= 0 else max(1, _LOCAL_ANALYZER_MAX_TOOL_CALLS)
         self._python_timeout = min(30, max(1, _LOCAL_ANALYZER_TOOL_TIMEOUT))
         self._yield_seconds = None if _LOCAL_ANALYZER_YIELD_SECONDS <= 0 else float(_LOCAL_ANALYZER_YIELD_SECONDS)
         configured_max_output = _LOCAL_ANALYZER_MAX_OUTPUT
@@ -1078,41 +1047,6 @@ class ToolAgent:
             "board_changed": any(bool(item.get("board_changed")) for item in executed_results),
             "stop_reason": last.get("stop_reason"),
         }
-
-    def _describe_last_outcome(self, summary: dict[str, Any] | None) -> str:
-        if not summary:
-            return ""
-        span = _format_action_span(
-            summary.get("start_action_num"),
-            summary.get("end_action_num"),
-        )
-        count = summary.get("executed_count")
-        prefix = "Last executed sequence"
-        if span and count:
-            prefix = f"Actions {span} ({count} total)"
-        elif span:
-            prefix = f"Action span {span}"
-        elif count:
-            prefix = f"Last executed sequence ({count} total)"
-
-        level = summary.get("level")
-        if summary.get("level_transition"):
-            level_text = f" to level {level}" if level is not None else ""
-            return f"{prefix} triggered a level transition{level_text}; re-ground on the new scene."
-        if summary.get("run_complete"):
-            return f"{prefix} completed the run."
-        if summary.get("game_over"):
-            return f"{prefix} reached GAME_OVER."
-
-        pieces = [prefix]
-        if summary.get("board_changed"):
-            pieces.append("produced a board change; verify that it affected gameplay objects rather than only HUD elements.")
-        else:
-            pieces.append("did not show a confirmed board change; treat this as weak evidence until verified.")
-        stop_reason = _normalize_summary_text(summary.get("stop_reason"))
-        if stop_reason:
-            pieces.append(f"stop_reason={stop_reason}.")
-        return " ".join(pieces)
 
     def _update_summarized_knowledge_from_assistant(self, content: str) -> None:
         note = _extract_scientist_note(content)
@@ -1633,22 +1567,22 @@ class ToolAgent:
             history.pop(0)
         return True
 
-    def _keep_recent_history_turns(
+    def _keep_recent_history_steps(
         self,
         messages: list[dict[str, Any]],
         *,
-        max_turns: int,
+        max_steps: int,
     ) -> list[dict[str, Any]]:
-        if max_turns <= 0 or not messages:
+        if max_steps <= 0 or not messages:
             return []
 
         kept_reversed: list[dict[str, Any]] = []
-        assistant_turns = 0
+        step_count = 0
         for message in reversed(messages):
             kept_reversed.append(message)
             if str(message.get("role", "")).strip() == "assistant":
-                assistant_turns += 1
-                if assistant_turns >= max_turns:
+                step_count += 1
+                if step_count >= max_steps:
                     break
 
         kept = list(reversed(kept_reversed))
@@ -1667,9 +1601,9 @@ class ToolAgent:
         if not trimmed:
             return []
         trimmed_history = trimmed[1:]
-        history = self._keep_recent_history_turns(
+        history = self._keep_recent_history_steps(
             trimmed_history,
-            max_turns=_PERSISTENT_HISTORY_ASSISTANT_TURNS,
+            max_steps=_PERSISTENT_HISTORY_STEPS,
         )
         if (
             history
@@ -1791,26 +1725,26 @@ class ToolAgent:
             return None
 
         try:
-            turn_count = 0
-            while self._tool_steps is None or turn_count < self._tool_steps:
+            request_count = 0
+            while self._max_tool_calls is None or request_count < self._max_tool_calls:
                 yielded_control_reason = control_yield_reason()
                 if yielded_control_reason is not None:
                     break
-                turn_count += 1
+                request_count += 1
                 tools = self._tools(state_path)
                 tool_choice = _request_tool_choice(tools)
                 messages = self._trim_messages_for_context(messages, tools=tools)
                 latest_request_messages = json.loads(json.dumps(messages))
                 latest_request_tools = json.loads(json.dumps(tools))
                 latest_request_tool_choice = tool_choice
-                latest_request_index = turn_count
+                latest_request_index = request_count
                 _write_prompt_log_snapshot(
                     prompt_log,
                     model_id=self._model.model_id,
                     base_url=self._model.base_url,
                     display_action_num=display_action_num,
                     analysis_step=analysis_step,
-                    request_index=turn_count,
+                    request_index=request_count,
                     messages=latest_request_messages,
                     tools=latest_request_tools,
                     tool_choice=tool_choice,
