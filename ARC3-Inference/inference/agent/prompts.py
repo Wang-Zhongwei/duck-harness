@@ -40,13 +40,15 @@ STRUCTURED_RUNTIME_STATE_ADDENDUM = (
     "- `current_frame` exposes only `.ascii`, `.step`, `.level`, `.shape`, and `.segmentation`.\n"
     "- `current_frame.ascii` is a single newline-delimited string containing the latest board rendered with the letter-coded ARC color symbols.\n"
     "- `current_frame.segmentation` parses the board into objects. It returns `{'nodes': [...], 'adjacency_list': [...]}`.\n"
-    "- Each node in `segmentation['nodes']` is one 4-connected same-color object with: `id` (index, ordered top-most-left-most), `color` (ARC color character), `hash` (a signature of the object's color and shape that ignores its position -- equal hashes mean the same object regardless of where it is, so use it to track an object across frames or to spot multiple identical objects in one frame), `pixels` (cell count), `boundary` (clockwise outer-perimeter corner points as `[row, col]`), and `children` (ids of objects fully enclosed by this one).\n"
-    "- `segmentation['adjacency_list']` is a list of `[i, j]` node-id pairs whose objects share an edge.\n"
+    "- Each node in `segmentation['nodes']` is one 4-connected same-color object. The nodes are ordered top-most-left-most, and each one has exactly these fields: `id`, `color`, `area`, `bbox`, `boundary`, `children`.\n"
+    "- `id` is an 8-character signature of the object's color and shape that ignores its position -- equal ids mean the same color and shape wherever it sits, so use it to track an object across frames or to spot multiple identical objects in one frame. Identical-looking objects therefore SHARE one id; an id names a shape, not a particular node.\n"
+    "- `color` is the ARC color character. `area` is the cell count as an int. `bbox` is `[min_row, min_col, max_row, max_col]`, so height is `bbox[2] - bbox[0] + 1` and width is `bbox[3] - bbox[1] + 1`. `boundary` is the clockwise outer-perimeter corner points as `[row, col]`. `children` are the ids of objects fully enclosed by this one.\n"
+    "- `segmentation['adjacency_list']` is a list of `[id_a, id_b]` id pairs whose objects share an edge. Because identical objects share an id, resolve a pair back to specific nodes by filtering `segmentation['nodes']` on that id together with `bbox`.\n"
     
     "- `current_frame.step` is the current environment step count.\n"
     "- `current_frame.level` is the current level number.\n"
     "- `current_frame.shape` is a `(rows, cols)` tuple.\n"
-    "- The raw numeric grid is intentionally not exposed. Use `current_frame.segmentation` as your primary view of the board -- objects, colors, shapes, containment, adjacency, and cross-frame object hashes. Use `current_frame.ascii` only to read a small, specific region; do not scan the whole board with it.\n"
+    "- The raw numeric grid is intentionally not exposed. Use `current_frame.segmentation` as your primary view of the board -- objects, colors, shapes, containment, adjacency, and cross-frame object ids. Use `current_frame.ascii` only to read a small, specific region; do not scan the whole board with it.\n"
 
     "- `history` is a chronological list of action/frame snapshots.\n"
     "- `history` is a Python list of objects, not a dict.\n"
@@ -75,7 +77,7 @@ MULTIMODAL_CONTEXT_ADDENDUM = (
 
 PYTHON_ADDENDUM = (
     "\n\nPython tool guidance:\n"
-    "- Use `current_frame.segmentation` as your primary view of the board -- objects, colors, containment, adjacency, and cross-frame object hashes.\n"
+    "- Use `current_frame.segmentation` as your primary view of the board -- objects, colors, containment, adjacency, and cross-frame object ids.\n"
     "- Use `current_frame.ascii` only to read a small, specific region of the board when `segmentation` is not enough; never use it to scan or summarize the whole board.\n"
     "- Every `python` tool call starts fresh. Re-import modules or re-define any custom utility logic you need.\n"
     "- The only importable standard-library modules are: bisect, collections, copy, fractions, functools, heapq, itertools, json, math, operator, random, re, statistics, string.\n"

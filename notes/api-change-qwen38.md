@@ -1,0 +1,3 @@
+- agent use ascii very often -> append ascii in the user prompt
+- agent examines past transitions pretty often -> save richer information in each transition such as s_t, a_t and s_{t+1}, for s_{t} save both ascii and image; save transition timesteps {t_i}_{i from 1 to M} where t_i means transition from level-i to level-{i+1}. 
+- 

@@ -75,7 +75,7 @@ def _object_id(cells, color):
 
 
 NODE_FIELDS = (
-    "id", "color", "area", "bbox", "centroid", "h", "w", "boundary", "children",
+    "id", "color", "area", "bbox", "boundary", "children",
 )
 
 # Names that read like node fields but are not, mapped to what to use instead. Keeps a
@@ -87,23 +87,14 @@ _NODE_FIELD_HINTS = {
     "n_pixels": "area",
     "size": "area",
     "cells": "area for the count, or boundary/bbox for the shape",
-    "coords": "boundary for the outline, or bbox/centroid for position",
-    "shape": "h/w, or bbox",
-    "x": "centroid[1] or bbox[1] (columns)",
-    "y": "centroid[0] or bbox[0] (rows)",
+    "coords": "boundary for the outline, or bbox for position",
+    "shape": "bbox, as [min_row, min_col, max_row, max_col]",
+    "centroid": "bbox -- midpoint is ((bbox[0]+bbox[2])//2, (bbox[1]+bbox[3])//2)",
+    "h": "bbox -- height is bbox[2] - bbox[0] + 1",
+    "w": "bbox -- width is bbox[3] - bbox[1] + 1",
+    "x": "bbox[1] / bbox[3] (columns)",
+    "y": "bbox[0] / bbox[2] (rows)",
 }
-
-
-def _summarize_nodes(nodes, limit=6):
-    """Compact one-line-per-node listing, used in error messages so a failed lookup
-    shows what actually matched instead of only a count."""
-    shown = [
-        f"id={n['id']} color={n['color']} area={n['area']} bbox={n['bbox']}"
-        for n in nodes[:limit]
-    ]
-    if len(nodes) > limit:
-        shown.append(f"... and {len(nodes) - limit} more")
-    return "; ".join(shown)
 
 
 class Node(dict):
@@ -120,122 +111,6 @@ class Node(dict):
         raise KeyError(
             f"node has no field {key!r}. Node fields: {', '.join(NODE_FIELDS)}."
         )
-
-
-class NodeList(list):
-    """List of segmentation nodes with accessors for the common match patterns."""
-
-    def one(self):
-        """Return the single matching node; raise if the match is not unique."""
-        if len(self) != 1:
-            detail = _summarize_nodes(self) if self else "no nodes matched the filter"
-            raise ValueError(
-                f"expected exactly 1 matching node, found {len(self)} -- {detail}. "
-                "Tighten the filter, or use .first() / index the list if several "
-                "matches are expected."
-            )
-        return self[0]
-
-    def first(self):
-        """Return the top-most-left-most matching node; raise if there are none."""
-        if not self:
-            raise ValueError("no matching nodes")
-        return self[0]
-
-
-class Segmentation(dict):
-    """Segmentation result dict (``nodes`` + ``adjacency_list``) with a query method."""
-
-    FIND_KEYWORDS = (
-        "color", "not_color", "area", "min_area", "max_area", "id", "h", "w",
-        "min_h", "max_h", "min_w", "max_w", "in_bbox",
-    )
-
-    # Rejected keywords that have an obvious intended target.
-    _FIND_KEYWORD_HINTS = {
-        "hash": "id",
-        "count": "area",
-        "min_count": "min_area",
-        "max_count": "max_area",
-        "px": "area",
-        "min_px": "min_area",
-        "max_px": "max_area",
-        "pixels": "area",
-        "size": "area",
-        "bbox": "in_bbox",
-        "colour": "color",
-    }
-
-    def find(self, color=None, not_color=None, area=None, min_area=None, max_area=None,
-             id=None, h=None, w=None, min_h=None, max_h=None, min_w=None, max_w=None,
-             in_bbox=None, **unknown):
-        """Filter nodes by keyword; returns a :class:`NodeList` in reading order
-        (top-most-left-most first).
-
-        Every keyword matches the node field of the same name, so anything printed
-        from a node can be filtered on.
-
-        - ``color`` / ``not_color``: a color char or a set of them.
-        - ``area``: exact cell count; ``min_area`` / ``max_area``: inclusive bounds.
-        - ``id``: exact object id (position-invariant: same color + shape => same id,
-          in any frame; use to re-find an object after an action instead of holding a
-          stale node reference; identical-looking objects share an id, so this can
-          match several nodes).
-        - ``h`` / ``w``: exact bbox height/width; ``min_h`` / ``max_h`` / ``min_w`` /
-          ``max_w``: inclusive bounds.
-        - ``in_bbox``: ``(r0, c0, r1, c1)`` -- keep nodes whose bbox lies fully inside.
-        """
-        if unknown:
-            bad = sorted(unknown)
-            hints = [
-                f"{k!r} -> {self._FIND_KEYWORD_HINTS[k]!r}"
-                for k in bad
-                if k in self._FIND_KEYWORD_HINTS
-            ]
-            message = (
-                f"find() got unexpected keyword(s): {', '.join(repr(k) for k in bad)}. "
-                f"Valid keywords are exactly: {', '.join(self.FIND_KEYWORDS)}."
-            )
-            if hints:
-                message += f" Did you mean {', '.join(hints)}?"
-            raise TypeError(message)
-        if isinstance(color, str):
-            color = {color}
-        if isinstance(not_color, str):
-            not_color = {not_color}
-        out = NodeList()
-        for node in self["nodes"]:
-            if color is not None and node["color"] not in color:
-                continue
-            if not_color is not None and node["color"] in not_color:
-                continue
-            if id is not None and node["id"] != id:
-                continue
-            if area is not None and node["area"] != area:
-                continue
-            if min_area is not None and node["area"] < min_area:
-                continue
-            if max_area is not None and node["area"] > max_area:
-                continue
-            if h is not None and node["h"] != h:
-                continue
-            if min_h is not None and node["h"] < min_h:
-                continue
-            if max_h is not None and node["h"] > max_h:
-                continue
-            if w is not None and node["w"] != w:
-                continue
-            if min_w is not None and node["w"] < min_w:
-                continue
-            if max_w is not None and node["w"] > max_w:
-                continue
-            if in_bbox is not None:
-                r0, c0, r1, c1 = in_bbox
-                nr0, nc0, nr1, nc1 = node["bbox"]
-                if not (r0 <= nr0 and c0 <= nc0 and nr1 <= r1 and nc1 <= c1):
-                    continue
-            out.append(node)
-        return out
 
 
 def segment_layer(layer, color_chars):
@@ -255,25 +130,22 @@ def segment_layer(layer, color_chars):
       - ``color``: the component's ARC color character (looked up in ``color_chars``).
       - ``area``: number of cells in the component (an int, not a coordinate list).
         Counts only the component's own cells -- enclosed children are separate
-        components and are not included, though ``bbox``/``h``/``w`` do span them.
+        components and are not included, though ``bbox`` does span them.
       - ``bbox``: ``[r0, c0, r1, c1]`` -- the component's inclusive bounding box.
-      - ``centroid``: ``[r, c]`` -- the component's center of mass, rounded to ints.
-      - ``h`` / ``w``: bounding-box height and width.
       - ``boundary``: the component's outer perimeter as an ordered, clockwise list of
         ``[row, col]`` corner points -- a Moore-neighbour trace reduced to only the
         vertices where the contour changes direction (enclosed holes are not traced).
       - ``children``: ids of components directly enclosed by this node. A is a child of
         B only if B is the innermost component that fully surrounds A (every path from A
         to the grid edge crosses B), which yields a clean nesting tree. When several
-        enclosed objects look identical their ids coincide; disambiguate spatially
-        (e.g. ``find(id=..., in_bbox=parent bbox)``).
+        enclosed objects look identical their ids coincide; disambiguate spatially by
+        filtering on ``bbox``.
 
-    Returns a :class:`Segmentation` dict with:
+    Returns a dict with:
       - ``nodes``: list of the node dicts above, in reading order.
       - ``adjacency_list``: sorted, de-duplicated list of ``[id_a, id_b]`` pairs for
         components that share a 4-connected edge (includes parent/child pairs, since
         they physically touch).
-    Query it with ``.find(color=..., area=..., ...)``.
     """
     height = len(layer)
     width = len(layer[0]) if height else 0
@@ -376,12 +248,6 @@ def segment_layer(layer, color_chars):
                     "color": color,
                     "area": len(cells),
                     "bbox": [r0, c0, r1, c1],
-                    "centroid": [
-                        round(sum(rows_) / len(cells)),
-                        round(sum(cols_) / len(cells)),
-                    ],
-                    "h": r1 - r0 + 1,
-                    "w": c1 - c0 + 1,
                     "boundary": [[r, c] for r, c in boundary],
                     "children": [object_ids[child] for child in children[cid]],
                 }
@@ -393,4 +259,4 @@ def segment_layer(layer, color_chars):
     )
     adjacency_list = [list(pair) for pair in adjacency_list]
 
-    return Segmentation({"nodes": nodes, "adjacency_list": adjacency_list})
+    return {"nodes": nodes, "adjacency_list": adjacency_list}
