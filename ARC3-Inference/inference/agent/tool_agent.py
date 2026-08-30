@@ -21,6 +21,7 @@ from inference.agent.prompts import (
     STRUCTURED_RUNTIME_STATE_ADDENDUM,
     MULTIMODAL_CONTEXT_ADDENDUM,
     TOOL_CALL_FORMAT_GUIDANCE,
+    TURN_PROTOCOL_ADDENDUM,
     VISUAL_GAME_ADDENDUM,
 )
 
@@ -354,6 +355,7 @@ def _build_system_prompt(*, tool_output_tokens: int) -> str:
     prompt += VISUAL_GAME_ADDENDUM
     prompt += PYTHON_ADDENDUM
     prompt += COMPACT_TOOL_SESSION_ADDENDUM.format(tool_output_tokens=tool_output_tokens)
+    prompt += TURN_PROTOCOL_ADDENDUM
     return prompt
 
 
@@ -1152,39 +1154,16 @@ class ToolAgent:
             [
                 state_line,
                 f"Valid actions right now: {_format_valid_action_line(valid_actions)}.",
-                "Only tool: `python`. It receives `current_frame`, `previous_frame`, `history`, `transitions`, `last_transition`, `valid_actions`, `last_action_result`, and `action(actions)`.",
-                "Only letter-coded board views and lightweight metadata are exposed; raw numeric color IDs are not available.",
-                "Keep tool output compact: use `current_frame.segmentation` as the primary view, and `current_frame.ascii` only for a small specific region; never print full boards.",
-                "For the most recent change, compare `previous_frame` to `current_frame`, or `last_transition.before_frame` to `last_transition.after_frame`; `history[-1].frame` is the current frame, not the previous one.",
-                "Use Python to inspect the evidence, refine that world model from the newest history, and search or score candidate actions or short sequences against the current goal as you currently understand it.",
-                "Maintain a compact working world model of what the current level seems to contain, what actions appear to do, what the goal seems to be, what is still uncertain, and what plan currently looks best.",
-                "Below you are provided with the current world model from the previous turn. The default behavior is to copy it and add or remove things based on the evidence that you gathered. BEFORE EXECUTING NEW ACTIONS YOU MUST ALWAYS GIVE THE REVISED VERSION OF THE WORLD MODEL.",
             ]
         )
-        lines.append(
-            "You may call `action(actions)` more than once in one Python snippet if your search or control loop needs it, "
-            "but stop immediately if a result reports `game_over`, `run_complete`, `level_completed`, or `done`."
-        )
-        lines.extend(self._summarized_knowledge_lines())
-        lines.append("end of world model. ")
         if action_num == 0:
             lines.append(
                 "Ground yourself in `current_frame` before acting, but start with a compact structural summary rather than restating the full frame."
             )
         else:
             lines.append(
-                "Focus on what changed most recently in `history`, update the target environment change if needed, and separate gameplay-object changes from HUD-only changes."
+                "Focus on what changed most recently, update the target environment change if needed, and separate gameplay-object changes from HUD-only changes."
             )
-        lines.extend(
-            [
-                "When ready, call `action(actions)` from inside the `python` tool with the best valid action or ordered batch selected by your code. If your code has found a reliable short sequence, prefer batching it in one call.",
-                "You may call `action(actions)` more than once in one Python snippet if your search or control loop needs it.",
-                "If you include assistant text before a tool call, keep it short and use it to update the world model. Helpful optional prefixes are `World model:`, `Goal model:`, `Action model:`, `Recent findings:`, `Open questions:`, `Plan:`, and `Cross-level notes:`.",
-                TOOL_CALL_FORMAT_GUIDANCE,
-            ]
-        )
-        if "MOUSE" in _normalize_valid_actions(valid_actions):
-            lines.append("If you use MOUSE, include integer row and col arguments.")
         return "\n".join(lines)
 
     def _tools(self, state_path: Path) -> list[dict[str, Any]]:

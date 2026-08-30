@@ -114,3 +114,11 @@ COMPACT_TOOL_SESSION_ADDENDUM = (
     "- Tool responses are capped to about {tool_output_tokens} tokens. If a response is cut off, the tool result will tell you that.\n"
     "- Keep code snippets short and purpose-built rather than dumping large frameworks into one call.\n"
 )
+
+TURN_PROTOCOL_ADDENDUM = (
+    "\n\nPer-turn protocol:\n"
+    "- Each user turn carries only what changed: the outcome of the previous action sequence, the current step and level, and the valid actions right now. Everything else you need is already in this system prompt and in the conversation so far.\n"
+    "- Before executing new actions, restate your working world model as revised by the newest evidence. Carry forward what still holds, and drop or correct anything that recent evidence contradicts.\n"
+    "- Keep that revision to short assistant text before the tool call. Helpful optional prefixes are `World model:`, `Goal model:`, `Action model:`, `Recent findings:`, `Open questions:`, `Plan:`, and `Cross-level notes:`.\n"
+    "- Then use `python` to inspect the evidence, refine the world model from the newest history, score candidate actions or short sequences against the goal as you currently understand it, and call `action(...)` with the best action or ordered batch.\n"
+)
