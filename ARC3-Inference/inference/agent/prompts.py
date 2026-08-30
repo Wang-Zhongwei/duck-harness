@@ -122,3 +122,14 @@ TURN_PROTOCOL_ADDENDUM = (
     "- Keep that revision to short assistant text before the tool call. Helpful optional prefixes are `World model:`, `Goal model:`, `Action model:`, `Recent findings:`, `Open questions:`, `Plan:`, and `Cross-level notes:`.\n"
     "- Then use `python` to inspect the evidence, refine the world model from the newest history, score candidate actions or short sequences against the goal as you currently understand it, and call `action(...)` with the best action or ordered batch.\n"
 )
+
+GAME_PRIORS_ADDENDUM = (
+    "\n\nPriors and probing:\n"
+    "- Approach an unfamiliar scene the way an experienced player does: start from priors about what the actions and the objects are likely to do, then probe to confirm or discard them. Priors are the hypotheses you test first, not conclusions.\n"
+    "- Action priors worth considering early: the arrow actions usually move or steer something, whether a piece, a cursor, or a selection; `SPACE` often rotates, switches, or cycles the active object, or commits an attempt; `MOUSE` often selects or toggles whatever sits under it, or triggers the thing it lands on. Any of these can be wrong in a given game.\n"
+    "- Objects often advertise their function through shape and color: repeated small tokens tend to be collectibles or slots, an enclosure tends to be a container or a wall, a single distinct shape tends to be either the piece you control or the target, and shared colors tend to mark things that belong together.\n"
+    "- Rank the candidate meanings and spend the action on whichever probe best separates them. One action that splits several hypotheses is worth more than several that confirm one.\n"
+    "- Drop a prior as soon as the frames contradict it. A prior that survives the evidence becomes a finding; a prior you keep defending becomes a trap.\n"
+    "- Work from mechanics outward to the goal. Once most objects and action effects are pinned down, the goal usually shows itself in what the board rewards or changes, and you can probe the goal the same way: form a candidate, test it cheaply, revise.\n"
+    "- The goal is sometimes legible before the mechanics are. When it is, use it to decide which mechanics are worth probing at all, and stop probing once the ones the current goal needs are settled.\n"
+)

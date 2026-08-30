@@ -17,6 +17,7 @@ from inference.agent.action_names import to_model_actions
 from inference.agent.prompts import (
     COMPACT_TOOL_SESSION_ADDENDUM,
     GAME_OVERVIEW_ADDENDUM,
+    GAME_PRIORS_ADDENDUM,
     PYTHON_ADDENDUM,
     STRUCTURED_RUNTIME_STATE_ADDENDUM,
     MULTIMODAL_CONTEXT_ADDENDUM,
@@ -353,6 +354,7 @@ def _build_system_prompt(*, tool_output_tokens: int) -> str:
     if current_grid_image_enabled():
         prompt += MULTIMODAL_CONTEXT_ADDENDUM
     prompt += VISUAL_GAME_ADDENDUM
+    prompt += GAME_PRIORS_ADDENDUM
     prompt += PYTHON_ADDENDUM
     prompt += COMPACT_TOOL_SESSION_ADDENDUM.format(tool_output_tokens=tool_output_tokens)
     prompt += TURN_PROTOCOL_ADDENDUM
