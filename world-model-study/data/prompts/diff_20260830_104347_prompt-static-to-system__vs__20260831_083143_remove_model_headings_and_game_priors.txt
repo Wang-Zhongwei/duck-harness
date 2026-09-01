@@ -1,0 +1,13 @@
+--- 20260830_104347_prompt-static-to-system
++++ 20260831_083143_remove_model_headings_and_game_priors
+@@ -62,0 +63,10 @@
++Priors and probing:
++- Approach an unfamiliar scene the way an experienced player does: start from priors about what the actions and the objects are likely to do, then probe to confirm or discard them. Priors are the hypotheses you test first, not conclusions.
++- Action priors worth considering early: the arrow actions usually move or steer something, whether a piece, a cursor, or a selection; `SPACE` often rotates, switches, or cycles the active object, or commits an attempt; `MOUSE` often selects or toggles whatever sits under it, or triggers the thing it lands on. Any of these can be wrong in a given game.
++- Objects often advertise their function through shape and color: repeated small tokens tend to be collectibles or slots, an enclosure tends to be a container or a wall, a single distinct shape tends to be either the piece you control or the target, and shared colors tend to mark things that belong together.
++- Rank the candidate meanings and spend the action on whichever probe best separates them. One action that splits several hypotheses is worth more than several that confirm one.
++- Drop a prior as soon as the frames contradict it. A prior that survives the evidence becomes a finding; a prior you keep defending becomes a trap.
++- Work from mechanics outward to the goal. Once most objects and action effects are pinned down, the goal usually shows itself in what the board rewards or changes, and you can probe the goal the same way: form a candidate, test it cheaply, revise.
++- The goal is sometimes legible before the mechanics are. When it is, use it to decide which mechanics are worth probing at all, and stop probing once the ones the current goal needs are settled.
++
++

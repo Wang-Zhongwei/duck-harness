@@ -1158,14 +1158,14 @@ class ToolAgent:
                 f"Valid actions right now: {_format_valid_action_line(valid_actions)}.",
             ]
         )
-        if action_num == 0:
-            lines.append(
-                "Ground yourself in `current_frame` before acting, but start with a compact structural summary rather than restating the full frame."
-            )
-        else:
-            lines.append(
-                "Focus on what changed most recently, update the target environment change if needed, and separate gameplay-object changes from HUD-only changes."
-            )
+        # if action_num == 0:
+        #     lines.append(
+        #         "Ground yourself in `current_frame` before acting, but start with a compact structural summary rather than restating the full frame."
+        #     )
+        # else:
+        #     lines.append(
+        #         "Focus on what changed most recently, update the target environment change if needed, and separate gameplay-object changes from HUD-only changes."
+        #     )
         return "\n".join(lines)
 
     def _tools(self, state_path: Path) -> list[dict[str, Any]]:

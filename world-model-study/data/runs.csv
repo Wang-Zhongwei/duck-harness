@@ -1,0 +1,5 @@
+run,prompt_sha,score,headings_per_game_run,pct_game_runs_zero
+20260830_104347_prompt-static-to-system,b82517d15703,6.492,1.66,24.8
+20260830_110533_game-priors,179de17880f4,5.837,1.344,32.8
+20260831_083143_remove_model_headings_and_game_priors,179de17880f4,6.773,1.728,29.6
+20260831_094025_improve-game-prior-prompts-from-lp85-vc33-sc25,2a659e0a594c,6.427,1.66,25.6
