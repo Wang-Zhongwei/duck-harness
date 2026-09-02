@@ -29,6 +29,7 @@ from inference.agent.prompts import (
 from inference.agent.vision_context import (
     current_grid_image_enabled,
     current_grid_image_part,
+    image_part_prompt_tokens,
 )
 
 from inference.agent.python_tool_sandbox import run_sandboxed_python
@@ -430,12 +431,40 @@ def _ascii_history_view_payload(history_entries: list[HistoryEntry]) -> list[dic
     return payload
 
 
+def _strip_images_for_estimate(value: Any) -> tuple[Any, int]:
+    """Replace image parts with a stub, returning their exact token cost.
+
+    An inlined image is a multi-kilobyte base64 string but only a few dozen
+    prompt tokens, so charging it by rendered length over-counts it roughly
+    eightfold. Pulling images out of the text estimate and pricing them via
+    the processor's own arithmetic keeps the two accurate independently.
+    """
+    total = 0
+
+    def walk(node: Any) -> Any:
+        nonlocal total
+        if isinstance(node, dict):
+            tokens = image_part_prompt_tokens(node)
+            if tokens is not None:
+                total += tokens
+                return ""
+            return {key: walk(item) for key, item in node.items()}
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        return node
+
+    return walk(value), total
+
+
 def _estimate_tokens(value: Any) -> int:
+    payload, image_tokens = _strip_images_for_estimate(value)
     try:
-        rendered = json.dumps(value, ensure_ascii=True, sort_keys=True, default=str)
+        rendered = json.dumps(payload, ensure_ascii=True, sort_keys=True, default=str)
     except TypeError:
-        rendered = str(value)
-    return max(1, (len(rendered) + 2) // 3)
+        rendered = str(payload)
+    # Text stays a deliberate over-estimate (~3 chars/token against a real
+    # ~4), so the trimmer still evicts early and cannot overflow the window.
+    return max(1, (len(rendered) + 2) // 3 + image_tokens)
 
 
 def _host_accessible_base_url(base_url: str) -> str:
